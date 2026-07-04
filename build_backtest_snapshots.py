@@ -9,7 +9,7 @@ import pandas as pd
 from config import DATA_DIR, REPORT_DIR, WATCHLIST, TIMEFRAMES, RULES
 from data_loader import load_symbol_csv, regular_session_only, aggregate_bars, MARKET_TZ
 from zone_detector import detect_zones
-from watchlist import (
+from core.watchlist_engine import (
     build_watchlist_from_zone_snapshot,
     _filter_final_report,
     _active_zones_for_watchlist,
