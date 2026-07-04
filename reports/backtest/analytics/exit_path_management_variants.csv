@@ -1,0 +1,9 @@
+variant,r_source,trades,sample_flag,profit_win_rate,target_hit_rate,avg_r,total_r,avg_mfe_r,avg_mae_r,sample_retention_pct,avg_r_delta_vs_baseline,diagnostic_read
+Optimistic intrabar: target before stop if same candle,optimistic_intrabar_result,2407,ok,43.37,7.85,0.019,45.152,2.14,-5.255,100.0,0.102,management_change_candidate
+Intrabar target-priority check,target_priority_3r_exit_r,2407,ok,40.71,7.85,0.009,21.645,2.14,-5.255,100.0,0.092,management_change_candidate
+Exit on first close back through boundary,boundary_loss_1_close_exit_r,2407,ok,33.78,7.85,-0.058,-138.465,2.14,-5.255,100.0,0.025,management_change_candidate
+Neutral result: exclude target/stop same-candle ambiguity,neutral_intrabar_result,2346,ok,41.9,5.46,-0.059,-137.848,0.852,-0.907,97.47,0.024,ambiguity_clean_sample
+Exit after two closes back through boundary,boundary_loss_2_closes_exit_r,2407,ok,33.98,7.85,-0.069,-165.468,2.14,-5.255,100.0,0.014,management_change_candidate
+Move stop to breakeven after +1R,breakeven_after_1r_exit_r,2407,ok,34.77,7.85,-0.078,-188.803,2.14,-5.255,100.0,0.005,management_change_candidate
+Baseline replay: conservative stop before target,r_multiple,2407,ok,40.84,7.85,-0.083,-198.848,2.14,-5.255,100.0,0.0,does_not_improve_replay_result
+9EMA protection after +0.5R,ema_protect_05r_exit_r,2407,ok,41.34,7.85,-0.086,-207.003,2.14,-5.255,100.0,-0.003,does_not_improve_replay_result

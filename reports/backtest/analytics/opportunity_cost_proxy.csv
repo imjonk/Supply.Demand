@@ -1,0 +1,12 @@
+rejection_reason,rejected_candidates,symbols,avg_volume_ratio,avg_body_ratio
+price_never_touched_zone,12400,"AAPL, AMD, AMZN, ANET, APP, ARM, ASTS, AVGO, COIN, COST, CRM, CRWD",,
+zone_touched_no_directional_rejection_or_break,2352,"AAPL, AMD, AMZN, ANET, APP, ARM, ASTS, AVGO, COIN, COST, CRM, CRWD",,
+overlap_same_symbol,1849,"AAPL, AMD, AMZN, ANET, APP, ARM, ASTS, AVGO, COIN, COST, CRM, CRWD",,
+zone_touched_wrong_ema_side,773,"AAPL, AMD, AMZN, ANET, APP, ARM, ASTS, AVGO, COIN, COST, CRM, CRWD",,
+confirmation_pending_low_volume_or_small_body,720,"AAPL, AMD, AMZN, ANET, APP, ARM, ASTS, AVGO, COIN, COST, CRM, CRWD",,
+confirmation_or_zone_touch_before_min_entry_time,262,"AAPL, AMD, AMZN, ANET, APP, ARM, ASTS, AVGO, COIN, COST, CRM, CRWD",,
+zone_touched_wrong_ema_and_vwap_side,122,"AAPL, AMD, AMZN, ANET, APP, ARM, ASTS, AVGO, COIN, COST, CRM, CRWD",,
+zone_touched_no_structure_confirmation,68,"AAPL, AMD, AMZN, ANET, ARM, ASTS, AVGO, COIN, COST, CRM, CRWD, GOOGL",,
+zone_touched_wrong_vwap_side,41,"AAPL, AMD, APP, ARM, ASTS, COIN, CRM, GOOGL, HOOD, IONQ, META, MSTR",,
+no_future_bars,31,"AMZN, ARM, CRM, GOOGL, HIMS, INTC, IONQ, META, NFLX, NOW, NVDA, PANW",,
+invalid_risk,13,"ASTS, GOOGL, HOOD, INTC, IONQ, MSTR, PANW, PLTR, SHOP, SMCI, SNOW, SOFI",,

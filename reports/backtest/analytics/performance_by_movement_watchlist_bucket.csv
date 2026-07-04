@@ -1,0 +1,4 @@
+movement_watchlist_bucket,edge_read,trades,profit_wins,profit_win_rate,target_hits,target_hit_rate,reached_1r_rate,reached_2r_rate,avg_r,median_r,total_r,avg_mfe_r,avg_mae_r
+Priority movement watch,Slight edge,1086,532,48.99,58,5.34,32.87,11.51,0.065,-0.018,70.806,1.013,-1.129
+Developing movement watch,Flat / noisy,1622,762,46.98,130,8.01,33.05,13.19,0.032,-0.08,52.031,2.54,-6.878
+Research / monitor only,Flat / noisy,659,282,42.79,50,7.59,34.29,12.44,-0.032,-0.144,-21.379,1.259,-1.112

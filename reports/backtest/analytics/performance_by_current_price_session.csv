@@ -1,0 +1,3 @@
+current_price_session,edge_read,trades,profit_wins,profit_win_rate,target_hits,target_hit_rate,reached_1r_rate,reached_2r_rate,avg_r,median_r,total_r,avg_mfe_r,avg_mae_r
+Premarket,Flat / noisy,3366,1576,46.82,237,7.04,33.21,12.48,0.03,-0.076,102.458,1.787,-3.895
+Aftermarket,Low sample,1,0,0.0,1,100.0,100.0,100.0,-1.0,-1.0,-1.0,34.714,-4.429

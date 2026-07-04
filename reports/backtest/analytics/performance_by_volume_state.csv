@@ -1,0 +1,4 @@
+volume_state,edge_read,trades,profit_wins,profit_win_rate,target_hits,target_hit_rate,reached_1r_rate,reached_2r_rate,avg_r,median_r,total_r,avg_mfe_r,avg_mae_r
+high_volume,Flat / noisy,3246,1516,46.7,228,7.02,33.18,12.23,0.025,-0.077,79.632,1.82,-3.978
+elevated_volume,Slight edge,116,58,50.0,9,7.76,34.48,18.97,0.177,-0.002,20.587,1.096,-1.673
+normal_volume,Low sample,5,2,40.0,1,20.0,40.0,40.0,0.248,-1.0,1.239,2.675,-1.626

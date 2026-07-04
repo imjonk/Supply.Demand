@@ -1,0 +1,15 @@
+variant,trades,sample_flag,profit_win_rate,target_hit_rate,avg_r,total_r,avg_mfe_r,avg_mae_r,sample_retention_pct,avg_r_delta_vs_baseline,r_source,diagnostic_read,usefulness_rank
+Require strong instant reaction candle,975,ok,40.82,7.28,-0.055,-53.826,0.989,-0.943,40.51,0.028,r_multiple,candidate_filter_or_management_change,1
+Require confirmation score >= 5,1155,ok,40.95,7.62,-0.064,-73.429,1.107,-1.321,47.99,0.019,r_multiple,candidate_filter_or_management_change,1
+Require boundary reclaim/rejection,806,ok,47.39,1.86,-0.034,-27.23,0.647,-0.58,33.49,0.049,r_multiple,improves_but_too_selective,2
+Require zone edge tap,2407,ok,40.84,7.85,-0.083,-198.848,2.14,-5.255,100.0,0.0,r_multiple,does_not_improve_expectancy,4
+Require 9EMA or VWAP break,2407,ok,40.84,7.85,-0.083,-198.848,2.14,-5.255,100.0,0.0,r_multiple,does_not_improve_expectancy,4
+Require structure confirmation,2407,ok,40.84,7.85,-0.083,-198.848,2.14,-5.255,100.0,0.0,r_multiple,does_not_improve_expectancy,4
+Live-style: exclude B/C grades,1105,ok,40.81,7.33,-0.083,-91.619,2.058,-1.906,45.91,0.0,r_multiple,does_not_improve_expectancy,4
+Require 2-candle follow-through window,2296,ok,40.77,7.88,-0.085,-195.235,2.194,-5.435,95.39,-0.002,r_multiple,does_not_improve_expectancy,4
+Require confirmation score >= 4,2295,ok,40.78,7.89,-0.085,-195.154,2.194,-5.437,95.35,-0.002,r_multiple,does_not_improve_expectancy,4
+Require good wick quality,2287,ok,40.8,7.87,-0.085,-193.263,2.198,-5.441,95.01,-0.002,r_multiple,does_not_improve_expectancy,4
+Manage reversals: 9EMA protection after +0.5R,2407,ok,41.34,7.85,-0.086,-207.003,2.14,-5.255,100.0,-0.003,ema_protect_05r_exit_r,does_not_improve_expectancy,4
+Require VPA confirmation,501,ok,39.32,9.18,-0.098,-49.223,1.228,-1.956,20.81,-0.015,r_multiple,does_not_improve_expectancy,4
+Live-style: Final only,297,ok,36.36,9.76,-0.122,-36.311,1.36,-2.234,12.34,-0.039,r_multiple,does_not_improve_expectancy,4
+Live-style: A/A+ Final only,297,ok,36.36,9.76,-0.122,-36.311,1.36,-2.234,12.34,-0.039,r_multiple,does_not_improve_expectancy,4

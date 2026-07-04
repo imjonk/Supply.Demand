@@ -1,0 +1,10 @@
+zone_type,structure_or_move_context,vpa_state,raw_zone_outcome,events
+demand,,,demand_ambiguous_same_bar,2
+demand,,,demand_broken,132
+demand,,,demand_chop,24
+demand,,,demand_held,80
+supply,,,supply_ambiguous_same_bar,8
+supply,,,supply_broken,90
+supply,,,supply_chop,23
+supply,,,supply_rejected,69
+supply,,,unresolved,3

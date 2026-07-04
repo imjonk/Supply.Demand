@@ -1,0 +1,11 @@
+zone_movement_state,edge_read,trades,profit_wins,profit_win_rate,target_hits,target_hit_rate,reached_1r_rate,reached_2r_rate,avg_r,median_r,total_r,avg_mfe_r,avg_mae_r
+above_demand_no_trigger,Slight edge,550,272,49.45,45,8.18,31.27,12.55,0.059,-0.018,32.529,1.236,-1.095
+bouncing_from_demand,Flat / noisy,521,229,43.95,48,9.21,35.7,15.74,0.053,-0.165,27.725,3.599,-17.808
+rejecting_from_supply,Flat / noisy,451,206,45.68,36,7.98,34.15,13.97,0.058,-0.091,26.302,3.47,-2.578
+approaching_demand_with_weakness,Slight edge,375,190,50.67,26,6.93,31.47,11.2,0.063,0.008,23.579,0.966,-1.027
+approaching_supply_grinding,Slight edge,86,46,53.49,4,4.65,32.56,11.63,0.145,0.067,12.456,0.884,-0.572
+below_supply_no_trigger,Flat / noisy,496,228,45.97,44,8.87,35.69,13.51,0.021,-0.1,10.579,1.23,-1.733
+testing_demand,Flat / noisy,145,64,44.14,8,5.52,29.66,13.1,0.031,-0.056,4.562,0.914,-0.762
+approaching_demand_grinding,Negative edge,111,52,46.85,3,2.7,29.73,8.11,-0.068,-0.05,-7.58,0.88,-1.474
+testing_supply,Negative edge,173,76,43.93,4,2.31,32.95,8.09,-0.053,-0.159,-9.088,0.851,-0.73
+approaching_supply_with_strength,Flat / noisy,459,213,46.41,20,4.36,32.9,10.02,-0.043,-0.071,-19.606,1.097,-0.824

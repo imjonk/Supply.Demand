@@ -1,0 +1,6 @@
+vpa_state,edge_read,trades,profit_wins,profit_win_rate,target_hits,target_hit_rate,reached_1r_rate,reached_2r_rate,avg_r,median_r,total_r,avg_mfe_r,avg_mae_r
+volume_expansion_with_direction,Flat / noisy,692,328,47.4,50,7.23,34.25,12.14,0.074,-0.036,51.516,1.026,-1.496
+high_volume,Flat / noisy,1777,832,46.82,124,6.98,34.55,12.66,0.023,-0.086,40.875,1.733,-1.345
+elevated_volume,Slight edge,80,41,51.25,6,7.5,35.0,17.5,0.171,0.003,13.706,1.11,-2.015
+normal_volume,Low sample,5,2,40.0,1,20.0,40.0,40.0,0.248,-1.0,1.239,2.675,-1.626
+absorption_possible,Flat / noisy,813,373,45.88,57,7.01,29.27,11.81,-0.007,-0.108,-5.878,2.653,-11.711

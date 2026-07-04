@@ -1,0 +1,5 @@
+exit_reason,trades,avg_r,total_r,avg_mfe_r,avg_mae_r
+end_of_day,1515,0.126,190.522,0.509,-0.394
+stop_zone,1076,-1.0,-1076.0,3.42,-11.403
+ema_protection_2_closes,599,0.761,455.936,1.571,-0.308
+target_3r,177,3.0,531.0,3.715,-0.361
