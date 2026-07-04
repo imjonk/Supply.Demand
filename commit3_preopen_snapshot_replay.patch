@@ -1,0 +1,126 @@
+--- replay_backtest.py	2026-07-04 06:41:45.893636356 +0000
++++ /mnt/data/v45_commit3/replay_backtest.py	2026-07-04 06:51:18.152186037 +0000
+@@ -83,23 +83,66 @@
+     return scenario_file, scenario_col
+ 
+ 
+-def _prepare_snapshot_rows(scenarios: pd.DataFrame, *, day: str, scenario_file: Path, snapshot_mode: str) -> pd.DataFrame:
+-    """Validate and stamp snapshot rows before replay.
+-
+-    This is a guardrail against accidentally replaying dynamically-created
+-    candidates. If older snapshot files lack candidate ids, assign deterministic
+-    legacy ids so every candidate/trade can still be traced to a row in the
+-    frozen watchlist file.
++def _prepare_snapshot_rows(
++    scenarios: pd.DataFrame,
++    *,
++    day: str,
++    scenario_file: Path,
++    snapshot_mode: str,
++    allow_legacy_snapshot_ids: bool = False,
++) -> pd.DataFrame:
++    """Validate and stamp frozen snapshot rows before replay.
++
++    Replay is now snapshot-driven. Every replay candidate must be traceable to a
++    row that was frozen by build_backtest_snapshots.py before the simulated
++    trading day. Older snapshot files can be replayed only when explicitly
++    allowed with --allow-legacy-snapshot-ids.
+     """
+     out = scenarios.copy()
+     out["replay_snapshot_file"] = str(scenario_file)
+     out["replay_snapshot_mode"] = snapshot_mode
+-    if "snapshot_candidate_id" not in out.columns:
++
++    missing_id_col = "snapshot_candidate_id" not in out.columns
++    blank_ids = False if missing_id_col else out["snapshot_candidate_id"].astype(str).str.strip().eq("").any()
++    if missing_id_col or blank_ids:
++        if not allow_legacy_snapshot_ids:
++            raise SystemExit(
++                f"Snapshot file {scenario_file} is missing stable snapshot_candidate_id values. "
++                "Rebuild snapshots with build_backtest_snapshots.py, or pass "
++                "--allow-legacy-snapshot-ids for old files."
++            )
+         out["snapshot_candidate_id"] = [f"{day}|{snapshot_mode}|legacy_snapshot_row_{i}" for i in range(len(out))]
++
+     if "snapshot_test_date" not in out.columns:
++        if not allow_legacy_snapshot_ids:
++            raise SystemExit(
++                f"Snapshot file {scenario_file} is missing snapshot_test_date. "
++                "Rebuild snapshots with build_backtest_snapshots.py."
++            )
+         out["snapshot_test_date"] = day
++
++    snapshot_days = pd.to_datetime(out["snapshot_test_date"], errors="coerce").dt.date
++    expected_day = pd.to_datetime(day).date()
++    mismatched = snapshot_days.notna() & (snapshot_days != expected_day)
++    if mismatched.any():
++        bad_ids = out.loc[mismatched, "snapshot_candidate_id"].astype(str).head(5).tolist()
++        raise SystemExit(
++            f"Snapshot/test-date mismatch while replaying {day} from {scenario_file}. "
++            f"Example candidate ids: {bad_ids}"
++        )
+     return out
+ 
++
++def _record_missing_snapshot_candidate(candidates: list[dict], *, day: str, manifest_row: pd.Series, snapshot_mode: str, scenario_file: Path, reason: str) -> None:
++    candidates.append({
++        "test_date": day,
++        "as_of_date": manifest_row.get("as_of_date", ""),
++        "snapshot_mode": snapshot_mode,
++        "scenario_file": str(scenario_file),
++        "entry_eligible": False,
++        "rejection_reason": reason,
++    })
++
+ def _scenario_side(row) -> str:
+     side = str(row.get("side", "")).lower()
+     if side in {"long", "short"}:
+@@ -1111,7 +1154,9 @@
+     parser.add_argument("--ema-exit-after-r", type=float, default=0.0, help="Deprecated compatibility option. 9EMA protection now runs continuously after entry.")
+     parser.add_argument("--ema-exit-confirm-bars", type=int, default=2)
+     parser.add_argument("--use-final-only", action="store_true", help="Replay only strict final watchlist rows. Default uses final + developing scenario rows.")
+-    parser.add_argument("--snapshot-mode", choices=["close", "preopen"], default="close", help="Use prior-close snapshots or simulated preopen movement-context snapshots. Default: close.")
++    parser.add_argument("--snapshot-mode", choices=["close", "preopen"], default="preopen", help="Use frozen daily snapshots. Default: preopen, which simulates the morning watchlist before the market open.")
++    parser.add_argument("--allow-legacy-snapshot-ids", action="store_true", help="Allow replay of old snapshot files that do not contain snapshot_candidate_id metadata. Off by default to enforce frozen snapshot integrity.")
++    parser.add_argument("--allow-missing-snapshots", action="store_true", help="Skip missing snapshot files instead of failing fast. Intended only for partial/debug runs.")
+     args = parser.parse_args()
+ 
+     symbols = _parse_symbols(args.symbols)
+@@ -1143,21 +1188,28 @@
+             use_final_only=args.use_final_only,
+         )
+         if not scenario_file.exists():
+-            candidates.append({
+-                "test_date": day,
+-                "as_of_date": m.get("as_of_date", ""),
+-                "snapshot_mode": args.snapshot_mode,
+-                "scenario_file": str(scenario_file),
+-                "entry_eligible": False,
+-                "rejection_reason": "missing_snapshot_file",
+-            })
+-            continue
++            _record_missing_snapshot_candidate(
++                candidates,
++                day=day,
++                manifest_row=m,
++                snapshot_mode=args.snapshot_mode,
++                scenario_file=scenario_file,
++                reason="missing_snapshot_file",
++            )
++            if args.allow_missing_snapshots:
++                continue
++            raise SystemExit(
++                f"Missing {args.snapshot_mode} snapshot for {day}: {scenario_file}. "
++                "Run build_backtest_snapshots.py first, or pass --snapshot-mode close "
++                "if you intentionally want prior-close snapshots."
++            )
+         scenarios = pd.read_csv(scenario_file)
+         scenarios = _prepare_snapshot_rows(
+             scenarios,
+             day=day,
+             scenario_file=scenario_file,
+             snapshot_mode=args.snapshot_mode,
++            allow_legacy_snapshot_ids=args.allow_legacy_snapshot_ids,
+         )
+         if scenarios.empty:
+             continue
