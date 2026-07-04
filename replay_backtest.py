@@ -143,6 +143,78 @@ def _record_missing_snapshot_candidate(candidates: list[dict], *, day: str, mani
         "rejection_reason": reason,
     })
 
+
+_REQUIRED_REPLAY_SNAPSHOT_COLUMNS = [
+    "snapshot_candidate_id",
+    "snapshot_test_date",
+    "symbol",
+    "zone_bottom",
+    "zone_top",
+]
+
+
+def _validate_replay_snapshot_contract(scenarios: pd.DataFrame, *, day: str, scenario_file: Path) -> pd.DataFrame:
+    """Enforce the replay contract: every replay candidate must be a frozen snapshot row.
+
+    This is intentionally strict. The replay engine may evaluate, reject, or trade
+    candidates from the daily watchlist snapshot, but it must not fabricate
+    candidates intraday. Stable snapshot ids are the linkage between:
+
+        watchlist snapshot -> replay candidate -> trade row -> analysis
+    """
+    missing = [c for c in _REQUIRED_REPLAY_SNAPSHOT_COLUMNS if c not in scenarios.columns]
+    if missing:
+        raise SystemExit(
+            f"Snapshot file {scenario_file} is not replay-compatible for {day}. "
+            f"Missing required columns: {missing}. Rebuild snapshots with build_backtest_snapshots.py."
+        )
+
+    out = scenarios.copy()
+    out["snapshot_candidate_id"] = out["snapshot_candidate_id"].astype(str).str.strip()
+    blank = out["snapshot_candidate_id"].eq("") | out["snapshot_candidate_id"].str.lower().isin({"nan", "none"})
+    if blank.any():
+        raise SystemExit(
+            f"Snapshot file {scenario_file} has blank snapshot_candidate_id values for {day}. "
+            "Replay requires frozen watchlist candidate ids."
+        )
+
+    dupes = out["snapshot_candidate_id"].duplicated(keep=False)
+    if dupes.any():
+        examples = out.loc[dupes, "snapshot_candidate_id"].head(10).tolist()
+        raise SystemExit(
+            f"Snapshot file {scenario_file} has duplicate snapshot_candidate_id values for {day}. "
+            f"Examples: {examples}"
+        )
+
+    out["candidate_source"] = "frozen_watchlist_snapshot"
+    out["replay_candidate_row_number"] = range(1, len(out) + 1)
+    return out
+
+
+def _assert_trade_candidate_integrity(trades_df: pd.DataFrame, cand_df: pd.DataFrame) -> None:
+    """Fail fast if a trade cannot be traced back to a loaded snapshot candidate."""
+    if trades_df.empty:
+        return
+    if "snapshot_candidate_id" not in trades_df.columns or "snapshot_candidate_id" not in cand_df.columns:
+        raise SystemExit("Replay integrity error: missing snapshot_candidate_id on trades or candidates.")
+
+    trade_ids = set(trades_df["snapshot_candidate_id"].astype(str))
+    candidate_ids = set(cand_df["snapshot_candidate_id"].astype(str))
+    missing = sorted(x for x in trade_ids if x and x not in candidate_ids)
+    if missing:
+        raise SystemExit(
+            "Replay integrity error: trades were produced from ids not present in entry_candidates.csv. "
+            f"Examples: {missing[:10]}"
+        )
+
+    non_snapshot = trades_df.get("candidate_source", pd.Series([], dtype=str)).astype(str).ne("frozen_watchlist_snapshot")
+    if len(non_snapshot) and non_snapshot.any():
+        examples = trades_df.loc[non_snapshot, ["snapshot_candidate_id", "symbol"]].head(10).to_dict("records")
+        raise SystemExit(
+            "Replay integrity error: one or more trades did not originate from frozen snapshots. "
+            f"Examples: {examples}"
+        )
+
 def _scenario_side(row) -> str:
     side = str(row.get("side", "")).lower()
     if side in {"long", "short"}:
@@ -1211,6 +1283,11 @@ def main():
             snapshot_mode=args.snapshot_mode,
             allow_legacy_snapshot_ids=args.allow_legacy_snapshot_ids,
         )
+        scenarios = _validate_replay_snapshot_contract(
+            scenarios,
+            day=day,
+            scenario_file=scenario_file,
+        )
         if scenarios.empty:
             continue
         if symbols:
@@ -1233,6 +1310,9 @@ def main():
                 "test_date": day,
                 "as_of_date": m["as_of_date"],
                 "snapshot_mode": args.snapshot_mode,
+                "candidate_source": sc.get("candidate_source", "frozen_watchlist_snapshot"),
+                "replay_candidate_row_number": sc.get("replay_candidate_row_number", ""),
+                "candidate_lifecycle_state": "loaded_from_snapshot",
                 "scenario_file": str(scenario_file),
                 "snapshot_candidate_id": sc.get("snapshot_candidate_id", ""),
                 "snapshot_test_date": sc.get("snapshot_test_date", day),
@@ -1275,25 +1355,25 @@ def main():
                 "setup_quality_score": sc.get("setup_quality_score", sc.get("quality_score", "")),
             }
             if day_df.empty:
-                cand.update({"entry_eligible": False, "rejection_reason": "missing_5m_day_data"})
+                cand.update({"entry_eligible": False, "candidate_lifecycle_state": "rejected_missing_day_data", "rejection_reason": "missing_5m_day_data"})
                 candidates.append(cand)
                 continue
             entry_time, entry = _entry_signal(day_df, sc, min_entry_time, args.preset)
             if entry_time is None:
-                cand.update({"entry_eligible": False, **entry})
+                cand.update({"entry_eligible": False, "candidate_lifecycle_state": "rejected_no_entry_confirmation", **entry})
                 candidates.append(cand)
                 continue
             if max_entry_time is not None and entry_time.time() > max_entry_time:
-                cand.update({"entry_eligible": False, **entry, "entry_time": entry_time.isoformat(), "rejection_reason": "entry_after_max_entry_time"})
+                cand.update({"entry_eligible": False, "candidate_lifecycle_state": "rejected_entry_after_cutoff", **entry, "entry_time": entry_time.isoformat(), "rejection_reason": "entry_after_max_entry_time"})
                 candidates.append(cand)
                 continue
             if sym in symbol_open_until and entry_time <= symbol_open_until[sym]:
-                cand.update({"entry_eligible": False, "rejection_reason": "overlap_same_symbol"})
+                cand.update({"entry_eligible": False, "candidate_lifecycle_state": "rejected_overlap_same_symbol", "rejection_reason": "overlap_same_symbol"})
                 candidates.append(cand)
                 continue
             exit_info = _simulate_exit(day_df, entry_time, sc, entry, args.rr, args.ema_exit_after_r, args.ema_exit_confirm_bars)
             if "skip_reason" in exit_info:
-                cand.update({"entry_eligible": False, "rejection_reason": exit_info["skip_reason"]})
+                cand.update({"entry_eligible": False, "candidate_lifecycle_state": "rejected_exit_simulation_skip", "rejection_reason": exit_info["skip_reason"]})
                 candidates.append(cand)
                 continue
 
@@ -1305,19 +1385,41 @@ def main():
 
             symbol_open_until[sym] = pd.to_datetime(exit_info["exit_time"])
             row = {**cand, **entry, **exit_info, **management_variants, "entry_time": entry_time.isoformat(), "entry_eligible": True,
+                   "candidate_lifecycle_state": "trade_entered_from_snapshot",
                    "target_ladder": sc.get("target_ladder", "")}
             trades.append(row)
-            candidates.append({**cand, **entry, "entry_time": entry_time.isoformat(), "entry_eligible": True})
+            candidates.append({**cand, **entry, "entry_time": entry_time.isoformat(), "entry_eligible": True,
+                               "candidate_lifecycle_state": "trade_entered_from_snapshot"})
 
     out_dir = REPORT_DIR / "backtest"
     out_dir.mkdir(parents=True, exist_ok=True)
     trades_df = pd.DataFrame(trades)
     cand_df = pd.DataFrame(candidates)
+    _assert_trade_candidate_integrity(trades_df, cand_df)
     trades_path = out_dir / "trades.csv"
     cand_path = out_dir / "entry_candidates.csv"
     summary_path = out_dir / "summary.csv"
+    integrity_path = out_dir / "replay_snapshot_integrity.csv"
     trades_df.to_csv(trades_path, index=False)
     cand_df.to_csv(cand_path, index=False)
+
+    if cand_df.empty:
+        integrity = pd.DataFrame([{
+            "snapshot_candidates_loaded": 0,
+            "trades": 0,
+            "unique_snapshot_candidate_ids": 0,
+            "trades_with_snapshot_candidate_id": 0,
+            "non_snapshot_trade_rows": 0,
+        }])
+    else:
+        integrity = pd.DataFrame([{
+            "snapshot_candidates_loaded": int(len(cand_df)),
+            "trades": int(len(trades_df)),
+            "unique_snapshot_candidate_ids": int(cand_df["snapshot_candidate_id"].astype(str).nunique()) if "snapshot_candidate_id" in cand_df.columns else 0,
+            "trades_with_snapshot_candidate_id": int(trades_df["snapshot_candidate_id"].astype(str).str.strip().ne("").sum()) if not trades_df.empty and "snapshot_candidate_id" in trades_df.columns else 0,
+            "non_snapshot_trade_rows": int(trades_df.get("candidate_source", pd.Series([], dtype=str)).astype(str).ne("frozen_watchlist_snapshot").sum()) if not trades_df.empty else 0,
+        }])
+    integrity.to_csv(integrity_path, index=False)
 
     if trades_df.empty:
         summary = pd.DataFrame([{"trades": 0}])
