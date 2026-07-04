@@ -60,6 +60,46 @@ def _load_day_5m(symbol: str, day: str) -> pd.DataFrame:
     return df
 
 
+
+def _resolve_snapshot_file(manifest_row: pd.Series, *, snapshot_mode: str, use_final_only: bool) -> tuple[Path, str]:
+    """Resolve the frozen watchlist snapshot file for one replay day.
+
+    Replay must consume daily snapshot rows only. It must not create or discover
+    new watchlist candidates intraday. This helper centralizes snapshot-file
+    selection and keeps path fallback behavior for moved Windows projects.
+    """
+    if snapshot_mode == "preopen":
+        scenario_col = "preopen_final_file" if use_final_only else "preopen_scenario_file"
+        fallback_dir = REPORT_DIR / "backtest" / "preopen_snapshots"
+    else:
+        scenario_col = "final_file" if use_final_only else "scenario_file"
+        fallback_dir = REPORT_DIR / "backtest" / "snapshots"
+
+    scenario_file = Path(str(manifest_row.get(scenario_col, "")))
+    if not scenario_file.exists():
+        snap_name = str(scenario_file).replace("\\", "/").split("/")[-1]
+        fallback = fallback_dir / snap_name
+        scenario_file = fallback if fallback.exists() else scenario_file
+    return scenario_file, scenario_col
+
+
+def _prepare_snapshot_rows(scenarios: pd.DataFrame, *, day: str, scenario_file: Path, snapshot_mode: str) -> pd.DataFrame:
+    """Validate and stamp snapshot rows before replay.
+
+    This is a guardrail against accidentally replaying dynamically-created
+    candidates. If older snapshot files lack candidate ids, assign deterministic
+    legacy ids so every candidate/trade can still be traced to a row in the
+    frozen watchlist file.
+    """
+    out = scenarios.copy()
+    out["replay_snapshot_file"] = str(scenario_file)
+    out["replay_snapshot_mode"] = snapshot_mode
+    if "snapshot_candidate_id" not in out.columns:
+        out["snapshot_candidate_id"] = [f"{day}|{snapshot_mode}|legacy_snapshot_row_{i}" for i in range(len(out))]
+    if "snapshot_test_date" not in out.columns:
+        out["snapshot_test_date"] = day
+    return out
+
 def _scenario_side(row) -> str:
     side = str(row.get("side", "")).lower()
     if side in {"long", "short"}:
@@ -1097,23 +1137,28 @@ def main():
 
     for _, m in manifest.iterrows():
         day = str(m["test_date"])
-        if args.snapshot_mode == "preopen":
-            scenario_col = "preopen_final_file" if args.use_final_only else "preopen_scenario_file"
-            scenario_file = Path(str(m.get(scenario_col, "")))
-            fallback_dir = REPORT_DIR / "backtest" / "preopen_snapshots"
-        else:
-            scenario_col = "final_file" if args.use_final_only else "scenario_file"
-            scenario_file = Path(str(m.get(scenario_col, "")))
-            fallback_dir = REPORT_DIR / "backtest" / "snapshots"
+        scenario_file, scenario_col = _resolve_snapshot_file(
+            m,
+            snapshot_mode=args.snapshot_mode,
+            use_final_only=args.use_final_only,
+        )
         if not scenario_file.exists():
-            # Snapshot manifests created on Windows may contain absolute Windows paths.
-            # When the project is moved/extracted elsewhere, fall back to the local snapshot folder.
-            snap_name = str(scenario_file).replace("\\", "/").split("/")[-1]
-            fallback = fallback_dir / snap_name
-            scenario_file = fallback if fallback.exists() else scenario_file
-        if not scenario_file.exists():
+            candidates.append({
+                "test_date": day,
+                "as_of_date": m.get("as_of_date", ""),
+                "snapshot_mode": args.snapshot_mode,
+                "scenario_file": str(scenario_file),
+                "entry_eligible": False,
+                "rejection_reason": "missing_snapshot_file",
+            })
             continue
         scenarios = pd.read_csv(scenario_file)
+        scenarios = _prepare_snapshot_rows(
+            scenarios,
+            day=day,
+            scenario_file=scenario_file,
+            snapshot_mode=args.snapshot_mode,
+        )
         if scenarios.empty:
             continue
         if symbols:
@@ -1137,6 +1182,11 @@ def main():
                 "as_of_date": m["as_of_date"],
                 "snapshot_mode": args.snapshot_mode,
                 "scenario_file": str(scenario_file),
+                "snapshot_candidate_id": sc.get("snapshot_candidate_id", ""),
+                "snapshot_test_date": sc.get("snapshot_test_date", day),
+                "snapshot_as_of_date": sc.get("snapshot_as_of_date", m.get("as_of_date", "")),
+                "snapshot_source_file": sc.get("snapshot_source_file", str(scenario_file)),
+                "replay_snapshot_file": sc.get("replay_snapshot_file", str(scenario_file)),
                 "symbol": sym,
                 "scenario": sc.get("scenario_label", sc.get("scenario", "")),
                 "side": _scenario_side(sc),

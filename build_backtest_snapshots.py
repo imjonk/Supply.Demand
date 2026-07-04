@@ -233,6 +233,46 @@ def _latest_prices_as_of(five_min_cache: Dict[str, pd.DataFrame], asof: pd.Times
     return prices
 
 
+
+def _stable_snapshot_candidate_id(df: pd.DataFrame, test_date, snapshot_type: str) -> pd.Series:
+    """Return a deterministic candidate id for frozen watchlist rows.
+
+    The replay engine uses this id to prove every simulated trade came from
+    a specific daily watchlist snapshot row rather than from dynamic intraday
+    discovery.
+    """
+    if df.empty:
+        return pd.Series(dtype=str)
+
+    def _col(row, name, default=""):
+        value = row.get(name, default)
+        if pd.isna(value):
+            return default
+        return str(value)
+
+    ids = []
+    for i, row in df.reset_index(drop=True).iterrows():
+        scenario = _col(row, "scenario_label", _col(row, "scenario"))
+        symbol = _col(row, "symbol").upper()
+        zone_type = _col(row, "zone_type")
+        timeframe = _col(row, "timeframe", _col(row, "primary_timeframe"))
+        bottom = _col(row, "zone_bottom")
+        top = _col(row, "zone_top")
+        ids.append(f"{test_date}|{snapshot_type}|{symbol}|{scenario}|{zone_type}|{timeframe}|{bottom}|{top}|{i}")
+    return pd.Series(ids, index=df.index)
+
+
+def _stamp_snapshot_metadata(df: pd.DataFrame, *, test_date, as_of_date, snapshot_type: str, source_file: str = "") -> pd.DataFrame:
+    """Attach immutable snapshot metadata to each watchlist candidate row."""
+    out = df.copy()
+    out["snapshot_test_date"] = str(test_date)
+    out["snapshot_as_of_date"] = str(as_of_date)
+    out["snapshot_type"] = str(snapshot_type)
+    out["snapshot_candidate_id"] = _stable_snapshot_candidate_id(out, test_date, snapshot_type)
+    if source_file:
+        out["snapshot_source_file"] = str(source_file)
+    return out
+
 def _parse_preopen_time(value: str) -> time:
     try:
         hh, mm = str(value).split(":", 1)
@@ -387,6 +427,16 @@ def main():
         scenarios_path = prefix.with_name(prefix.name + "_scenarios.csv")
         final_path = prefix.with_name(prefix.name + "_final_watchlist.csv")
 
+        watch_df = _stamp_snapshot_metadata(
+            watch_df,
+            test_date=test_date,
+            as_of_date=as_of_date,
+            snapshot_type="close",
+            source_file=str(scenarios_path),
+        )
+        final_watch = _filter_final_report(watch_df)
+        final_watch["snapshot_source_file"] = str(final_path)
+
         preopen_context_path = ""
         preopen_scenarios_path = ""
         preopen_final_path = ""
@@ -409,11 +459,19 @@ def main():
                     "symbol_movement_context": preopen_symbol_context,
                 },
             )
-            preopen_final_watch = _filter_final_report(preopen_watch_df)
             preopen_prefix = preopen_base / str(test_date)
             preopen_context_path = str(preopen_prefix.with_name(preopen_prefix.name + "_preopen_context.csv"))
             preopen_scenarios_path = str(preopen_prefix.with_name(preopen_prefix.name + "_movement_context_watchlist.csv"))
             preopen_final_path = str(preopen_prefix.with_name(preopen_prefix.name + "_preopen_final_watchlist.csv"))
+            preopen_watch_df = _stamp_snapshot_metadata(
+                preopen_watch_df,
+                test_date=test_date,
+                as_of_date=as_of_date,
+                snapshot_type="preopen",
+                source_file=preopen_scenarios_path,
+            )
+            preopen_final_watch = _filter_final_report(preopen_watch_df)
+            preopen_final_watch["snapshot_source_file"] = preopen_final_path
             _write_preopen_context_snapshot(Path(preopen_context_path), symbols, latest_prices, preopen_prices, preopen_price_as_of, preopen_symbol_context, test_date, asof, preopen_asof)
             preopen_watch_df.to_csv(preopen_scenarios_path, index=False)
             preopen_final_watch.to_csv(preopen_final_path, index=False)

@@ -1,0 +1,193 @@
+diff -ruN v45/v45/build_backtest_snapshots.py v45_commit2/build_backtest_snapshots.py
+--- v45/v45/build_backtest_snapshots.py	2026-07-04 05:46:21.000000000 +0000
++++ v45_commit2/build_backtest_snapshots.py	2026-07-04 06:41:45.892685069 +0000
+@@ -233,6 +233,46 @@
+     return prices
+ 
+ 
++
++def _stable_snapshot_candidate_id(df: pd.DataFrame, test_date, snapshot_type: str) -> pd.Series:
++    """Return a deterministic candidate id for frozen watchlist rows.
++
++    The replay engine uses this id to prove every simulated trade came from
++    a specific daily watchlist snapshot row rather than from dynamic intraday
++    discovery.
++    """
++    if df.empty:
++        return pd.Series(dtype=str)
++
++    def _col(row, name, default=""):
++        value = row.get(name, default)
++        if pd.isna(value):
++            return default
++        return str(value)
++
++    ids = []
++    for i, row in df.reset_index(drop=True).iterrows():
++        scenario = _col(row, "scenario_label", _col(row, "scenario"))
++        symbol = _col(row, "symbol").upper()
++        zone_type = _col(row, "zone_type")
++        timeframe = _col(row, "timeframe", _col(row, "primary_timeframe"))
++        bottom = _col(row, "zone_bottom")
++        top = _col(row, "zone_top")
++        ids.append(f"{test_date}|{snapshot_type}|{symbol}|{scenario}|{zone_type}|{timeframe}|{bottom}|{top}|{i}")
++    return pd.Series(ids, index=df.index)
++
++
++def _stamp_snapshot_metadata(df: pd.DataFrame, *, test_date, as_of_date, snapshot_type: str, source_file: str = "") -> pd.DataFrame:
++    """Attach immutable snapshot metadata to each watchlist candidate row."""
++    out = df.copy()
++    out["snapshot_test_date"] = str(test_date)
++    out["snapshot_as_of_date"] = str(as_of_date)
++    out["snapshot_type"] = str(snapshot_type)
++    out["snapshot_candidate_id"] = _stable_snapshot_candidate_id(out, test_date, snapshot_type)
++    if source_file:
++        out["snapshot_source_file"] = str(source_file)
++    return out
++
+ def _parse_preopen_time(value: str) -> time:
+     try:
+         hh, mm = str(value).split(":", 1)
+@@ -387,6 +427,16 @@
+         scenarios_path = prefix.with_name(prefix.name + "_scenarios.csv")
+         final_path = prefix.with_name(prefix.name + "_final_watchlist.csv")
+ 
++        watch_df = _stamp_snapshot_metadata(
++            watch_df,
++            test_date=test_date,
++            as_of_date=as_of_date,
++            snapshot_type="close",
++            source_file=str(scenarios_path),
++        )
++        final_watch = _filter_final_report(watch_df)
++        final_watch["snapshot_source_file"] = str(final_path)
++
+         preopen_context_path = ""
+         preopen_scenarios_path = ""
+         preopen_final_path = ""
+@@ -409,11 +459,19 @@
+                     "symbol_movement_context": preopen_symbol_context,
+                 },
+             )
+-            preopen_final_watch = _filter_final_report(preopen_watch_df)
+             preopen_prefix = preopen_base / str(test_date)
+             preopen_context_path = str(preopen_prefix.with_name(preopen_prefix.name + "_preopen_context.csv"))
+             preopen_scenarios_path = str(preopen_prefix.with_name(preopen_prefix.name + "_movement_context_watchlist.csv"))
+             preopen_final_path = str(preopen_prefix.with_name(preopen_prefix.name + "_preopen_final_watchlist.csv"))
++            preopen_watch_df = _stamp_snapshot_metadata(
++                preopen_watch_df,
++                test_date=test_date,
++                as_of_date=as_of_date,
++                snapshot_type="preopen",
++                source_file=preopen_scenarios_path,
++            )
++            preopen_final_watch = _filter_final_report(preopen_watch_df)
++            preopen_final_watch["snapshot_source_file"] = preopen_final_path
+             _write_preopen_context_snapshot(Path(preopen_context_path), symbols, latest_prices, preopen_prices, preopen_price_as_of, preopen_symbol_context, test_date, asof, preopen_asof)
+             preopen_watch_df.to_csv(preopen_scenarios_path, index=False)
+             preopen_final_watch.to_csv(preopen_final_path, index=False)
+diff -ruN v45/v45/replay_backtest.py v45_commit2/replay_backtest.py
+--- v45/v45/replay_backtest.py	2026-07-04 05:46:21.000000000 +0000
++++ v45_commit2/replay_backtest.py	2026-07-04 06:41:45.893636356 +0000
+@@ -60,6 +60,46 @@
+     return df
+ 
+ 
++
++def _resolve_snapshot_file(manifest_row: pd.Series, *, snapshot_mode: str, use_final_only: bool) -> tuple[Path, str]:
++    """Resolve the frozen watchlist snapshot file for one replay day.
++
++    Replay must consume daily snapshot rows only. It must not create or discover
++    new watchlist candidates intraday. This helper centralizes snapshot-file
++    selection and keeps path fallback behavior for moved Windows projects.
++    """
++    if snapshot_mode == "preopen":
++        scenario_col = "preopen_final_file" if use_final_only else "preopen_scenario_file"
++        fallback_dir = REPORT_DIR / "backtest" / "preopen_snapshots"
++    else:
++        scenario_col = "final_file" if use_final_only else "scenario_file"
++        fallback_dir = REPORT_DIR / "backtest" / "snapshots"
++
++    scenario_file = Path(str(manifest_row.get(scenario_col, "")))
++    if not scenario_file.exists():
++        snap_name = str(scenario_file).replace("\\", "/").split("/")[-1]
++        fallback = fallback_dir / snap_name
++        scenario_file = fallback if fallback.exists() else scenario_file
++    return scenario_file, scenario_col
++
++
++def _prepare_snapshot_rows(scenarios: pd.DataFrame, *, day: str, scenario_file: Path, snapshot_mode: str) -> pd.DataFrame:
++    """Validate and stamp snapshot rows before replay.
++
++    This is a guardrail against accidentally replaying dynamically-created
++    candidates. If older snapshot files lack candidate ids, assign deterministic
++    legacy ids so every candidate/trade can still be traced to a row in the
++    frozen watchlist file.
++    """
++    out = scenarios.copy()
++    out["replay_snapshot_file"] = str(scenario_file)
++    out["replay_snapshot_mode"] = snapshot_mode
++    if "snapshot_candidate_id" not in out.columns:
++        out["snapshot_candidate_id"] = [f"{day}|{snapshot_mode}|legacy_snapshot_row_{i}" for i in range(len(out))]
++    if "snapshot_test_date" not in out.columns:
++        out["snapshot_test_date"] = day
++    return out
++
+ def _scenario_side(row) -> str:
+     side = str(row.get("side", "")).lower()
+     if side in {"long", "short"}:
+@@ -1097,23 +1137,28 @@
+ 
+     for _, m in manifest.iterrows():
+         day = str(m["test_date"])
+-        if args.snapshot_mode == "preopen":
+-            scenario_col = "preopen_final_file" if args.use_final_only else "preopen_scenario_file"
+-            scenario_file = Path(str(m.get(scenario_col, "")))
+-            fallback_dir = REPORT_DIR / "backtest" / "preopen_snapshots"
+-        else:
+-            scenario_col = "final_file" if args.use_final_only else "scenario_file"
+-            scenario_file = Path(str(m.get(scenario_col, "")))
+-            fallback_dir = REPORT_DIR / "backtest" / "snapshots"
+-        if not scenario_file.exists():
+-            # Snapshot manifests created on Windows may contain absolute Windows paths.
+-            # When the project is moved/extracted elsewhere, fall back to the local snapshot folder.
+-            snap_name = str(scenario_file).replace("\\", "/").split("/")[-1]
+-            fallback = fallback_dir / snap_name
+-            scenario_file = fallback if fallback.exists() else scenario_file
++        scenario_file, scenario_col = _resolve_snapshot_file(
++            m,
++            snapshot_mode=args.snapshot_mode,
++            use_final_only=args.use_final_only,
++        )
+         if not scenario_file.exists():
++            candidates.append({
++                "test_date": day,
++                "as_of_date": m.get("as_of_date", ""),
++                "snapshot_mode": args.snapshot_mode,
++                "scenario_file": str(scenario_file),
++                "entry_eligible": False,
++                "rejection_reason": "missing_snapshot_file",
++            })
+             continue
+         scenarios = pd.read_csv(scenario_file)
++        scenarios = _prepare_snapshot_rows(
++            scenarios,
++            day=day,
++            scenario_file=scenario_file,
++            snapshot_mode=args.snapshot_mode,
++        )
+         if scenarios.empty:
+             continue
+         if symbols:
+@@ -1137,6 +1182,11 @@
+                 "as_of_date": m["as_of_date"],
+                 "snapshot_mode": args.snapshot_mode,
+                 "scenario_file": str(scenario_file),
++                "snapshot_candidate_id": sc.get("snapshot_candidate_id", ""),
++                "snapshot_test_date": sc.get("snapshot_test_date", day),
++                "snapshot_as_of_date": sc.get("snapshot_as_of_date", m.get("as_of_date", "")),
++                "snapshot_source_file": sc.get("snapshot_source_file", str(scenario_file)),
++                "replay_snapshot_file": sc.get("replay_snapshot_file", str(scenario_file)),
+                 "symbol": sym,
+                 "scenario": sc.get("scenario_label", sc.get("scenario", "")),
+                 "side": _scenario_side(sc),
