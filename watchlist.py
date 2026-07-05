@@ -447,6 +447,42 @@ def _symbols_inside_any_zone(watch_zones_df: pd.DataFrame, latest_prices: dict) 
     return inside
 
 
+def _hard_exclusion_reason(row: pd.Series) -> str:
+    price = _safe_float(row.get('current_price'))
+    top = _safe_float(row.get('zone_top'))
+    bottom = _safe_float(row.get('zone_bottom'))
+    if price is None or top is None or bottom is None:
+        return ''
+    if _price_inside_zone(price, top, bottom):
+        return 'inside_zone_consolidation'
+    zt = str(row.get('zone_type', '')).lower()
+    lo, hi = min(bottom, top), max(bottom, top)
+    if zt == 'demand' and price < lo:
+        return 'zone_already_resolved_breakout'
+    if zt == 'supply' and price > hi:
+        return 'zone_already_resolved_breakout'
+
+    state = str(row.get('zone_movement_state', ''))
+    scenario = str(row.get('scenario', ''))
+    if state == 'bouncing_from_demand' and scenario == 'demand_hold':
+        return 'zone_already_resolved_rejection'
+    if state == 'rejecting_from_supply' and scenario == 'supply_reject':
+        return 'zone_already_resolved_rejection'
+    if state in {'above_demand_no_trigger', 'below_supply_no_trigger', 'bouncing_from_demand', 'rejecting_from_supply'}:
+        return 'not_approaching_candidate_zone'
+    return ''
+
+
+def _apply_hard_exclusions(watch_df: pd.DataFrame) -> pd.DataFrame:
+    if watch_df is None or watch_df.empty:
+        return watch_df
+    reasons = watch_df.apply(_hard_exclusion_reason, axis=1)
+    out = watch_df.loc[reasons.eq('')].copy()
+    out.attrs['hard_excluded_candidates'] = int(reasons.ne('').sum())
+    out.attrs['hard_exclusion_counts'] = reasons[reasons.ne('')].value_counts().to_dict()
+    return out
+
+
 def _target_zone_quality(row: pd.Series) -> float:
     """Score an opposing target zone.
 
@@ -1536,17 +1572,11 @@ def build_watchlist_from_zone_snapshot(zones_df: pd.DataFrame, latest_prices: di
     if active_zones_df.empty:
         return pd.DataFrame()
     watch_zones_df = merge_overlapping_zones(active_zones_df)
-    symbols_inside_zone = _symbols_inside_any_zone(watch_zones_df, latest_prices)
 
     candidates = []
     for _, z in watch_zones_df.iterrows():
         sym = str(z['symbol']).upper()
         if sym not in latest_prices:
-            continue
-        if sym in symbols_inside_zone:
-            # Current price is already inside an active supply/demand zone.
-            # Exclude the whole symbol from watchlist candidates until price
-            # leaves/resolves and starts approaching a different zone.
             continue
         price = float(latest_prices[sym])
         top = float(z['zone_top'])
@@ -1555,7 +1585,7 @@ def build_watchlist_from_zone_snapshot(zones_df: pd.DataFrame, latest_prices: di
 
         scenario_defs = []
         if z['zone_type'] == 'demand':
-            if price >= bottom:
+            if price is not None:
                 scenario_defs.append({
                     'scenario': 'demand_hold',
                     'setup': 'Demand Zone Test / Hold',
@@ -1566,7 +1596,7 @@ def build_watchlist_from_zone_snapshot(zones_df: pd.DataFrame, latest_prices: di
                     'invalidation': bottom,
                     'distance': _distance_to_zone(price, z['zone_type'], top, bottom),
                 })
-            if price >= bottom:
+            if price is not None:
                 scenario_defs.append({
                     'scenario': 'demand_break',
                     'setup': 'Demand Zone Breakdown',
@@ -1578,7 +1608,7 @@ def build_watchlist_from_zone_snapshot(zones_df: pd.DataFrame, latest_prices: di
                     'distance': _distance_to_trigger_pct(price, bottom, in_zone=in_zone),
                 })
         else:
-            if price <= top:
+            if price is not None:
                 scenario_defs.append({
                     'scenario': 'supply_reject',
                     'setup': 'Supply Zone Rejection',
@@ -1589,7 +1619,7 @@ def build_watchlist_from_zone_snapshot(zones_df: pd.DataFrame, latest_prices: di
                     'invalidation': top,
                     'distance': _distance_to_zone(price, z['zone_type'], top, bottom),
                 })
-            if price <= top:
+            if price is not None:
                 scenario_defs.append({
                     'scenario': 'supply_break',
                     'setup': 'Supply Zone Breakout',
@@ -1679,6 +1709,7 @@ def build_watchlist_from_zone_snapshot(zones_df: pd.DataFrame, latest_prices: di
         watch_df = enrich_movement_context(watch_df, symbol_movement_context, load_zone_reaction_history(REPORT_DIR))
         watch_df['snapshot_context_time'] = meta.get('snapshot_context_time', '')
         watch_df['snapshot_context_type'] = meta.get('snapshot_context_type', 'historical')
+    watch_df = _apply_hard_exclusions(watch_df)
     if watch_df.empty:
         return watch_df
 
@@ -1866,11 +1897,6 @@ def build_watchlist(as_of_date: str | None = None) -> tuple[pd.DataFrame, pd.Dat
         sym = str(z['symbol']).upper()
         if sym not in latest_prices:
             continue
-        if sym in symbols_inside_zone:
-            # Do not fabricate watchlist candidates for symbols already sitting
-            # inside any active zone. That state is consolidation/chop, not an
-            # approaching-zone setup.
-            continue
         price = latest_prices[sym]
         top = float(z['zone_top'])
         bottom = float(z['zone_bottom'])
@@ -1879,7 +1905,7 @@ def build_watchlist(as_of_date: str | None = None) -> tuple[pd.DataFrame, pd.Dat
         scenario_defs = []
         if z['zone_type'] == 'demand':
             # Bullish reaction from demand.
-            if price >= bottom:
+            if price is not None:
                 scenario_defs.append({
                     'scenario': 'demand_hold',
                     'setup': 'Demand Zone Test / Hold',
@@ -1891,7 +1917,7 @@ def build_watchlist(as_of_date: str | None = None) -> tuple[pd.DataFrame, pd.Dat
                     'distance': _distance_to_zone(price, z['zone_type'], top, bottom),
                 })
             # Bearish continuation through demand.
-            if price >= bottom:
+            if price is not None:
                 scenario_defs.append({
                     'scenario': 'demand_break',
                     'setup': 'Demand Zone Breakdown',
@@ -1904,7 +1930,7 @@ def build_watchlist(as_of_date: str | None = None) -> tuple[pd.DataFrame, pd.Dat
                 })
         else:
             # Bearish reaction from supply.
-            if price <= top:
+            if price is not None:
                 scenario_defs.append({
                     'scenario': 'supply_reject',
                     'setup': 'Supply Zone Rejection',
@@ -1916,7 +1942,7 @@ def build_watchlist(as_of_date: str | None = None) -> tuple[pd.DataFrame, pd.Dat
                     'distance': _distance_to_zone(price, z['zone_type'], top, bottom),
                 })
             # Bullish continuation through supply.
-            if price <= top:
+            if price is not None:
                 scenario_defs.append({
                     'scenario': 'supply_break',
                     'setup': 'Supply Zone Breakout',
@@ -2002,6 +2028,7 @@ def build_watchlist(as_of_date: str | None = None) -> tuple[pd.DataFrame, pd.Dat
     watch_df = pd.DataFrame(candidates)
     watch_df = _add_watchlist_visual_context(watch_df, watch_zones_df, structure_context, latest_prices, latest_price_as_of)
     watch_df = enrich_movement_context(watch_df, symbol_movement_context, load_zone_reaction_history(REPORT_DIR))
+    watch_df = _apply_hard_exclusions(watch_df)
     if not watch_df.empty:
         # Explain every candidate's eligibility. This keeps raw detection broad while
         # making the final filter transparent and mentor-style.
