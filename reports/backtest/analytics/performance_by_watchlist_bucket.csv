@@ -1,3 +1,0 @@
-watchlist_bucket,edge_read,trades,profit_wins,profit_win_rate,target_hits,target_hit_rate,reached_1r_rate,reached_2r_rate,avg_r,median_r,total_r,avg_mfe_r,avg_mae_r
-Final / Actionable,Slight edge,855,436,50.99,58,6.78,38.25,14.15,0.141,0.023,120.752,1.087,-1.104
-Developing Scenario,Flat / noisy,2512,1140,45.38,180,7.17,31.53,11.94,-0.008,-0.114,-19.294,2.038,-4.845

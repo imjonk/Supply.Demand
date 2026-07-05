@@ -1,3 +1,0 @@
-audit_scope,trades,avg_r,stop_after_reached_1r,stop_after_reached_2r,stop_after_reached_3r,target_stop_same_candle,same_candle_ambiguity,target_available_but_not_taken,mfe_after_exit_detected,unrealistic_r_outlier,pct_stop_after_1r,pct_same_candle_ambiguity,avg_mfe_until_exit,avg_mae_until_exit,avg_mfe_full_day,avg_mae_full_day
-all_trades,3367,0.03,201,96,61,61,137,61,890,226,5.97,4.07,1.797,-3.895,4.315,-26.836
-reversal_rejection,2407,-0.083,197,95,61,61,135,61,690,220,8.18,5.61,2.14,-5.255,5.555,-37.279

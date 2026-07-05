@@ -1,5 +1,0 @@
-setup_quality_grade,edge_read,trades,profit_wins,profit_win_rate,target_hits,target_hit_rate,reached_1r_rate,reached_2r_rate,avg_r,median_r,total_r,avg_mfe_r,avg_mae_r
-A,Flat / noisy,1485,699,47.07,99,6.67,31.45,12.39,0.046,-0.062,69.02,1.765,-1.5
-A+,Slight edge,310,167,53.87,15,4.84,34.84,10.97,0.141,0.098,43.805,0.935,-0.673
-B+,Flat / noisy,914,416,45.51,74,8.1,36.21,13.68,0.007,-0.108,5.983,2.642,-10.991
-B,Flat / noisy,658,294,44.68,50,7.6,32.37,11.85,-0.026,-0.196,-17.35,1.1,-0.963

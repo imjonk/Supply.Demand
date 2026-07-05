@@ -1,5 +1,0 @@
-zone_thesis,edge_read,trades,profit_wins,profit_win_rate,target_hits,target_hit_rate,reached_1r_rate,reached_2r_rate,avg_r,median_r,total_r,avg_mfe_r,avg_mae_r
-Demand Breakdown Watch,Positive edge,486,300,61.73,29,5.97,37.45,13.17,0.35,0.208,170.203,0.954,-0.46
-Supply Breakout Watch,Positive edge,474,293,61.81,20,4.22,38.82,10.34,0.274,0.233,130.103,0.92,-0.514
-Demand Hold/Reversal Watch,Negative edge,1216,507,41.69,101,8.31,30.43,12.91,-0.074,-0.257,-89.388,2.207,-8.483
-Supply Rejection Watch,Negative edge,1191,476,39.97,88,7.39,32.16,12.68,-0.092,-0.195,-109.46,2.071,-1.958

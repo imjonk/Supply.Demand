@@ -1,9 +1,0 @@
-gap_zone_context,edge_read,trades,profit_wins,profit_win_rate,target_hits,target_hit_rate,reached_1r_rate,reached_2r_rate,avg_r,median_r,total_r,avg_mfe_r,avg_mae_r
-no_meaningful_gap,Flat / noisy,700,334,47.71,69,9.86,35.71,13.43,0.074,-0.06,51.986,3.132,-13.721
-gap_between_zones,Flat / noisy,581,280,48.19,39,6.71,35.11,12.39,0.04,-0.039,23.361,2.907,-2.168
-gap_into_supply,Flat / noisy,1171,542,46.29,71,6.06,32.54,11.96,0.019,-0.089,22.091,1.018,-0.912
-gap_into_demand,Flat / noisy,905,414,45.75,59,6.52,31.05,12.6,0.004,-0.097,3.533,1.07,-1.301
-gap_through_supply,Low sample,3,3,100.0,0,0.0,66.67,33.33,0.701,0.464,2.103,1.397,-0.401
-gap_below_demand,Low sample,1,1,100.0,0,0.0,0.0,0.0,0.619,0.619,0.619,0.644,-0.353
-gap_through_demand,Low sample,2,1,50.0,0,0.0,0.0,0.0,-0.052,-0.052,-0.105,0.456,-0.806
-gap_above_supply,Low sample,4,1,25.0,0,0.0,25.0,0.0,-0.532,-0.568,-2.13,0.475,-0.7

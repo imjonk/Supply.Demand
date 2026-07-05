@@ -1,0 +1,31 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Test/tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated scanner/backtest output
+reports/
+
+# Logs and temporary files
+*.log
+*.tmp
+tmp/
+temp/
+
+# OS/editor files
+.DS_Store
+Thumbs.db

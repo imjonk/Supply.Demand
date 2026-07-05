@@ -1,3 +1,0 @@
-zone_type,edge_read,trades,profit_wins,profit_win_rate,target_hits,target_hit_rate,reached_1r_rate,reached_2r_rate,avg_r,median_r,total_r,avg_mfe_r,avg_mae_r
-demand,Flat / noisy,1702,807,47.41,130,7.64,32.43,12.98,0.047,-0.058,80.815,1.849,-6.192
-supply,Flat / noisy,1665,769,46.19,108,6.49,34.05,12.01,0.012,-0.091,20.643,1.743,-1.547
