@@ -1,5 +1,6 @@
 # Python caches
 __pycache__/
+pycache/
 *.py[cod]
 *$py.class
 
@@ -19,6 +20,10 @@ htmlcov/
 
 # Generated scanner/backtest output
 reports/
+snapshots/
+watchlists/
+output/
+logs/
 
 # Logs and temporary files
 *.log
