@@ -198,7 +198,16 @@ def _assert_trade_candidate_integrity(trades_df: pd.DataFrame, cand_df: pd.DataF
     if "snapshot_candidate_id" not in trades_df.columns or "snapshot_candidate_id" not in cand_df.columns:
         raise SystemExit("Replay integrity error: missing snapshot_candidate_id on trades or candidates.")
 
-    trade_ids = set(trades_df["snapshot_candidate_id"].astype(str))
+    trade_id_series = trades_df["snapshot_candidate_id"].astype(str).str.strip()
+    blank_trade_ids = trade_id_series.eq("") | trade_id_series.str.lower().isin({"nan", "none"})
+    if blank_trade_ids.any():
+        examples = trades_df.loc[blank_trade_ids, ["symbol"]].head(10).to_dict("records")
+        raise SystemExit(
+            "Replay integrity error: one or more trades are missing snapshot_candidate_id. "
+            f"Examples: {examples}"
+        )
+
+    trade_ids = set(trade_id_series)
     candidate_ids = set(cand_df["snapshot_candidate_id"].astype(str))
     missing = sorted(x for x in trade_ids if x and x not in candidate_ids)
     if missing:
@@ -759,6 +768,93 @@ def _iso_or_blank(ts):
         return ""
 
 
+def _candidate_zone_trace(day_df: pd.DataFrame, scenario: pd.Series) -> dict:
+    bottom = _safe_float(scenario.get("zone_bottom"))
+    top = _safe_float(scenario.get("zone_top"))
+    if day_df.empty or not np.isfinite(bottom) or not np.isfinite(top) or top <= bottom:
+        return {"first_zone_touch_time": "", "first_zone_exit_time": ""}
+
+    kind = _scenario_kind(scenario)
+    first_touch = None
+    first_exit = None
+    idx = day_df.index
+    high_a = day_df["high"].to_numpy(dtype=float)
+    low_a = day_df["low"].to_numpy(dtype=float)
+    close_a = day_df["close"].to_numpy(dtype=float)
+
+    for i in range(1, len(day_df)):
+        ts = idx[i]
+        high = high_a[i]
+        low = low_a[i]
+        close = close_a[i]
+        touched = low <= top and high >= bottom
+        crossed = (
+            (kind == "supply_breakout" and close > top and close_a[i - 1] <= top)
+            or (kind == "demand_breakdown" and close < bottom and close_a[i - 1] >= bottom)
+        )
+        exited = (
+            (kind in {"demand_reversal", "supply_breakout"} and close > top)
+            or (kind in {"supply_rejection", "demand_breakdown"} and close < bottom)
+        )
+        if first_touch is None and (touched or crossed):
+            first_touch = ts
+        if first_touch is not None and first_exit is None and exited:
+            first_exit = ts
+
+    return {
+        "first_zone_touch_time": _iso_or_blank(first_touch),
+        "first_zone_exit_time": _iso_or_blank(first_exit),
+    }
+
+
+def _candidate_lifecycle(day_df: pd.DataFrame, scenario: pd.Series, entry_time=None, terminal_state: str | None = None, rejection_reason: str = "") -> dict:
+    trace = _candidate_zone_trace(day_df, scenario)
+    touch = trace["first_zone_touch_time"]
+    exit_ = trace["first_zone_exit_time"]
+    state = terminal_state
+    if state is None:
+        if entry_time is not None:
+            state = "entered_trade"
+        elif not touch:
+            state = "never_reached_zone"
+            rejection_reason = rejection_reason or "never_reached_zone"
+        elif not exit_:
+            state = "rejected_inside_zone_chop"
+            rejection_reason = rejection_reason or "inside_zone_chop"
+        else:
+            state = "rejected_no_confirmation"
+            rejection_reason = rejection_reason or "no_confirmation"
+    return {
+        "candidate_lifecycle_state": state,
+        "first_zone_touch_time": touch,
+        "first_zone_exit_time": exit_,
+        "confirmation_time": _iso_or_blank(entry_time) if entry_time is not None else "",
+        "entry_time": _iso_or_blank(entry_time) if state == "entered_trade" else "",
+        "lifecycle_rejection_reason": "" if state == "entered_trade" else rejection_reason,
+    }
+
+
+def _candidate_lifecycle_row(cand: dict, lifecycle: dict) -> dict:
+    return {
+        "snapshot_candidate_id": cand.get("snapshot_candidate_id", ""),
+        "snapshot_test_date": cand.get("snapshot_test_date", cand.get("test_date", "")),
+        "symbol": cand.get("symbol", ""),
+        "scenario": cand.get("scenario", ""),
+        "zone_type": cand.get("zone_type", ""),
+        "zone_bottom": cand.get("zone_bottom", ""),
+        "zone_top": cand.get("zone_top", ""),
+        "watchlist_rank": cand.get("watchlist_rank", ""),
+        "current_price": cand.get("current_price", ""),
+        "distance_pct": cand.get("distance_pct", ""),
+        "lifecycle_state": lifecycle.get("candidate_lifecycle_state", "snapshot_candidate"),
+        "first_zone_touch_time": lifecycle.get("first_zone_touch_time", ""),
+        "first_zone_exit_time": lifecycle.get("first_zone_exit_time", ""),
+        "confirmation_time": lifecycle.get("confirmation_time", ""),
+        "entry_time": lifecycle.get("entry_time", ""),
+        "rejection_reason": lifecycle.get("lifecycle_rejection_reason", ""),
+    }
+
+
 def _exit_row(ts, price, reason, r_mult, mfe, mae, reached_1r, reached_2r, reached_3r, target, stop, risk, **extra):
     row = {
         "exit_time": ts.isoformat(),
@@ -1251,6 +1347,7 @@ def main():
 
     trades = []
     candidates = []
+    candidate_lifecycle = []
 
     for _, m in manifest.iterrows():
         day = str(m["test_date"])
@@ -1312,7 +1409,7 @@ def main():
                 "snapshot_mode": args.snapshot_mode,
                 "candidate_source": sc.get("candidate_source", "frozen_watchlist_snapshot"),
                 "replay_candidate_row_number": sc.get("replay_candidate_row_number", ""),
-                "candidate_lifecycle_state": "loaded_from_snapshot",
+                "candidate_lifecycle_state": "snapshot_candidate",
                 "scenario_file": str(scenario_file),
                 "snapshot_candidate_id": sc.get("snapshot_candidate_id", ""),
                 "snapshot_test_date": sc.get("snapshot_test_date", day),
@@ -1329,6 +1426,7 @@ def main():
                 "freshness": sc.get("freshness", sc.get("freshness_label", "")),
                 "tests": sc.get("tests", ""),
                 "watchlist_bucket": sc.get("watchlist_bucket", ""),
+                "watchlist_rank": sc.get("watchlist_rank", sc.get("rank", sc.get("replay_candidate_row_number", ""))),
                 "movement_watchlist_bucket": sc.get("movement_watchlist_bucket", ""),
                 "zone_thesis": sc.get("zone_thesis", ""),
                 "zone_movement_state": sc.get("zone_movement_state", ""),
@@ -1336,6 +1434,7 @@ def main():
                 "observation_reason": sc.get("observation_reason", ""),
                 "watch_for": sc.get("watch_for", ""),
                 "current_price": sc.get("current_price", ""),
+                "distance_pct": sc.get("distance_pct", ""),
                 "current_price_as_of": sc.get("current_price_as_of", ""),
                 "current_price_session": sc.get("current_price_session", ""),
                 "snapshot_context_time": sc.get("snapshot_context_time", m.get("preopen_context_time", "")),
@@ -1355,26 +1454,36 @@ def main():
                 "setup_quality_score": sc.get("setup_quality_score", sc.get("quality_score", "")),
             }
             if day_df.empty:
-                cand.update({"entry_eligible": False, "candidate_lifecycle_state": "rejected_missing_day_data", "rejection_reason": "missing_5m_day_data"})
+                lifecycle = _candidate_lifecycle(day_df, sc, terminal_state="finished_no_trade", rejection_reason="missing_5m_day_data")
+                cand.update({**lifecycle, "entry_eligible": False, "rejection_reason": "missing_5m_day_data"})
                 candidates.append(cand)
+                candidate_lifecycle.append(_candidate_lifecycle_row(cand, lifecycle))
                 continue
             entry_time, entry = _entry_signal(day_df, sc, min_entry_time, args.preset)
+            lifecycle = _candidate_lifecycle(day_df, sc, entry_time=entry_time)
             if entry_time is None:
-                cand.update({"entry_eligible": False, "candidate_lifecycle_state": "rejected_no_entry_confirmation", **entry})
+                cand.update({**lifecycle, "entry_eligible": False, **entry})
                 candidates.append(cand)
+                candidate_lifecycle.append(_candidate_lifecycle_row(cand, lifecycle))
                 continue
             if max_entry_time is not None and entry_time.time() > max_entry_time:
-                cand.update({"entry_eligible": False, "candidate_lifecycle_state": "rejected_entry_after_cutoff", **entry, "entry_time": entry_time.isoformat(), "rejection_reason": "entry_after_max_entry_time"})
+                lifecycle = _candidate_lifecycle(day_df, sc, entry_time=entry_time, terminal_state="rejected_after_max_entry_time", rejection_reason="entry_after_max_entry_time")
+                cand.update({**lifecycle, "entry_eligible": False, **entry, "entry_time": entry_time.isoformat(), "rejection_reason": "entry_after_max_entry_time"})
                 candidates.append(cand)
+                candidate_lifecycle.append(_candidate_lifecycle_row(cand, lifecycle))
                 continue
             if sym in symbol_open_until and entry_time <= symbol_open_until[sym]:
-                cand.update({"entry_eligible": False, "candidate_lifecycle_state": "rejected_overlap_same_symbol", "rejection_reason": "overlap_same_symbol"})
+                lifecycle = _candidate_lifecycle(day_df, sc, entry_time=entry_time, terminal_state="finished_no_trade", rejection_reason="overlap_same_symbol")
+                cand.update({**lifecycle, "entry_eligible": False, "rejection_reason": "overlap_same_symbol"})
                 candidates.append(cand)
+                candidate_lifecycle.append(_candidate_lifecycle_row(cand, lifecycle))
                 continue
             exit_info = _simulate_exit(day_df, entry_time, sc, entry, args.rr, args.ema_exit_after_r, args.ema_exit_confirm_bars)
             if "skip_reason" in exit_info:
-                cand.update({"entry_eligible": False, "candidate_lifecycle_state": "rejected_exit_simulation_skip", "rejection_reason": exit_info["skip_reason"]})
+                lifecycle = _candidate_lifecycle(day_df, sc, entry_time=entry_time, terminal_state="finished_no_trade", rejection_reason=exit_info["skip_reason"])
+                cand.update({**lifecycle, "entry_eligible": False, "rejection_reason": exit_info["skip_reason"]})
                 candidates.append(cand)
+                candidate_lifecycle.append(_candidate_lifecycle_row(cand, lifecycle))
                 continue
 
             management_variants = {}
@@ -1384,24 +1493,31 @@ def main():
                 )
 
             symbol_open_until[sym] = pd.to_datetime(exit_info["exit_time"])
+            cand.update(lifecycle)
+            if not str(cand.get("snapshot_candidate_id", "")).strip():
+                raise SystemExit("Replay integrity error: attempted trade without snapshot_candidate_id.")
             row = {**cand, **entry, **exit_info, **management_variants, "entry_time": entry_time.isoformat(), "entry_eligible": True,
-                   "candidate_lifecycle_state": "trade_entered_from_snapshot",
+                   "candidate_lifecycle_state": "entered_trade",
                    "target_ladder": sc.get("target_ladder", "")}
             trades.append(row)
             candidates.append({**cand, **entry, "entry_time": entry_time.isoformat(), "entry_eligible": True,
-                               "candidate_lifecycle_state": "trade_entered_from_snapshot"})
+                               "candidate_lifecycle_state": "entered_trade"})
+            candidate_lifecycle.append(_candidate_lifecycle_row(cand, lifecycle))
 
     out_dir = REPORT_DIR / "backtest"
     out_dir.mkdir(parents=True, exist_ok=True)
     trades_df = pd.DataFrame(trades)
     cand_df = pd.DataFrame(candidates)
+    lifecycle_df = pd.DataFrame(candidate_lifecycle, columns=_candidate_lifecycle_row({}, {}).keys())
     _assert_trade_candidate_integrity(trades_df, cand_df)
     trades_path = out_dir / "trades.csv"
     cand_path = out_dir / "entry_candidates.csv"
+    lifecycle_path = out_dir / "candidate_lifecycle.csv"
     summary_path = out_dir / "summary.csv"
     integrity_path = out_dir / "replay_snapshot_integrity.csv"
     trades_df.to_csv(trades_path, index=False)
     cand_df.to_csv(cand_path, index=False)
+    lifecycle_df.to_csv(lifecycle_path, index=False)
 
     if cand_df.empty:
         integrity = pd.DataFrame([{
@@ -1439,6 +1555,7 @@ def main():
     summary.to_csv(summary_path, index=False)
     print(f"Wrote {trades_path}")
     print(f"Wrote {cand_path}")
+    print(f"Wrote {lifecycle_path}")
     print(f"Wrote {summary_path}")
 
 
