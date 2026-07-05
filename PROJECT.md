@@ -2,6 +2,12 @@
 
 ## Core architecture
 
+Mission
+
+Develop and validate a repeatable supply & demand trading process that produces an actionable pre-market watchlist with a long-term objective of approximately 60% win rate while maintaining an average 3:1 or better realized reward:risk.
+
+Every change to the system must improve one or more parts of the trading process and be validated through historical replay against a fixed baseline before being accepted.
+
 The watchlist is the source of truth.
 
 Backtesting must simulate the real workflow:
