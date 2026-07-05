@@ -428,25 +428,6 @@ def _price_inside_zone(price: float, top: float, bottom: float) -> bool:
     return lo <= price_f <= hi
 
 
-def _symbols_inside_any_zone(watch_zones_df: pd.DataFrame, latest_prices: dict) -> set[str]:
-    """Symbols currently inside any active watchlist zone.
-
-    If a symbol is already sitting inside any active supply/demand zone, the
-    watchlist should exclude it entirely. That state represents unresolved
-    zone interaction/consolidation, not an approaching-zone setup.
-    """
-    inside: set[str] = set()
-    if watch_zones_df is None or watch_zones_df.empty or not latest_prices:
-        return inside
-    for _, zr in watch_zones_df.iterrows():
-        sym = str(zr.get('symbol', '')).upper()
-        if sym not in latest_prices:
-            continue
-        if _price_inside_zone(latest_prices[sym], zr.get('zone_top'), zr.get('zone_bottom')):
-            inside.add(sym)
-    return inside
-
-
 def _hard_exclusion_reason(row: pd.Series) -> str:
     price = _safe_float(row.get('current_price'))
     top = _safe_float(row.get('zone_top'))
@@ -457,19 +438,17 @@ def _hard_exclusion_reason(row: pd.Series) -> str:
         return 'inside_zone_consolidation'
     zt = str(row.get('zone_type', '')).lower()
     lo, hi = min(bottom, top), max(bottom, top)
-    if zt == 'demand' and price < lo:
-        return 'zone_already_resolved_breakout'
-    if zt == 'supply' and price > hi:
-        return 'zone_already_resolved_breakout'
-
     state = str(row.get('zone_movement_state', ''))
     scenario = str(row.get('scenario', ''))
-    if state == 'bouncing_from_demand' and scenario == 'demand_hold':
+
+    if scenario == 'demand_hold' and zt == 'demand' and price < lo:
+        return 'zone_already_resolved_breakout'
+    if scenario == 'supply_reject' and zt == 'supply' and price > hi:
+        return 'zone_already_resolved_breakout'
+    if scenario == 'demand_hold' and state == 'bouncing_from_demand':
         return 'zone_already_resolved_rejection'
-    if state == 'rejecting_from_supply' and scenario == 'supply_reject':
+    if scenario == 'supply_reject' and state == 'rejecting_from_supply':
         return 'zone_already_resolved_rejection'
-    if state in {'above_demand_no_trigger', 'below_supply_no_trigger', 'bouncing_from_demand', 'rejecting_from_supply'}:
-        return 'not_approaching_candidate_zone'
     return ''
 
 
@@ -1888,9 +1867,6 @@ def build_watchlist(as_of_date: str | None = None) -> tuple[pd.DataFrame, pd.Dat
     meta['active_zone_count'] = int(len(active_zones_df))
     meta['expired_zone_count'] = int(len(zones_df) - len(active_zones_df))
     watch_zones_df = merge_overlapping_zones(active_zones_df)
-    symbols_inside_zone = _symbols_inside_any_zone(watch_zones_df, latest_prices)
-    meta['excluded_inside_zone_symbols'] = len(symbols_inside_zone)
-    meta['excluded_inside_zone_symbol_list'] = ','.join(sorted(symbols_inside_zone))
 
     candidates = []
     for _, z in watch_zones_df.iterrows():
