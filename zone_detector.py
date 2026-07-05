@@ -4,6 +4,17 @@ import numpy as np
 
 from config import RULES
 
+ZONE_METADATA_FIELDS = [
+    "zone_id", "zone_timeframe", "zone_created_time", "zone_age_days", "zone_age_bars",
+    "zone_width", "zone_width_pct", "zone_height_atr", "touch_count_before_snapshot",
+    "first_touch_time", "last_touch_time", "fresh_zone", "departure_body_ratio",
+    "departure_candle_count", "departure_atr_expansion", "departure_strength_score",
+    "nested_inside_higher_tf", "higher_tf_zone_count", "overlapping_zone_count",
+    "confluence_score", "trend_alignment", "distance_to_next_supply",
+    "distance_to_next_demand", "gap_created_zone", "gap_into_zone",
+    "gap_away_from_zone", "base_quality_score", "historical_reaction_count",
+]
+
 
 def _prep_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -16,10 +27,12 @@ def _prep_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _zone_freshness(df: pd.DataFrame, start_idx: int, zone_type: str, top: float, bottom: float) -> tuple[str, int, bool]:
+def _zone_freshness(df: pd.DataFrame, start_idx: int, zone_type: str, top: float, bottom: float) -> tuple[str, int, bool, str, str]:
     # Start checking after the departure window so the departure itself doesn't count as a retest.
     tests = 0
     broken = False
+    first_touch_time = ""
+    last_touch_time = ""
     subsequent = df.iloc[start_idx + RULES.departure_window + 1:]
 
     for _, row in subsequent.iterrows():
@@ -31,20 +44,24 @@ def _zone_freshness(df: pd.DataFrame, start_idx: int, zone_type: str, top: float
                 break
             if overlaps:
                 tests += 1
+                first_touch_time = first_touch_time or row.name.isoformat()
+                last_touch_time = row.name.isoformat()
         else:
             if row["close"] > top:
                 broken = True
                 break
             if overlaps:
                 tests += 1
+                first_touch_time = first_touch_time or row.name.isoformat()
+                last_touch_time = row.name.isoformat()
 
     if broken:
-        return "broken", tests, True
+        return "broken", tests, True, first_touch_time, last_touch_time
     if tests == 0:
-        return "fresh", tests, False
+        return "fresh", tests, False, first_touch_time, last_touch_time
     if tests == 1:
-        return "one_test", tests, False
-    return "multiple_tests", tests, False
+        return "one_test", tests, False, first_touch_time, last_touch_time
+    return "multiple_tests", tests, False, first_touch_time, last_touch_time
 
 
 def _classify_prior_move(d: pd.DataFrame, i: int, row: pd.Series) -> tuple[str | None, float]:
@@ -158,7 +175,7 @@ def detect_zones(df: pd.DataFrame, symbol: str, timeframe: str) -> list[dict]:
             top = float(row["high"])
             bottom = float(row["body_bottom"])
 
-        freshness, tests, broken = _zone_freshness(d, i, zone_type, top, bottom)
+        freshness, tests, broken, first_touch_time, last_touch_time = _zone_freshness(d, i, zone_type, top, bottom)
 
         departure_strength = abs(departure_atr)
         quality_score = 0
@@ -166,15 +183,28 @@ def detect_zones(df: pd.DataFrame, symbol: str, timeframe: str) -> list[dict]:
         quality_score += min(3, departure_vol_ratio)
         quality_score += {"fresh": 3, "one_test": 1.5, "multiple_tests": 0.5}.get(freshness, 0)
         quality_score += {"1D": 3.0, "4H": 2.0, "3H": 1.5, "2H": 1.0, "90m": 0.75, "1H": 0.5}.get(timeframe, 0)
+        zone_width = max(0.0, top - bottom)
+        midpoint = max((top + bottom) / 2.0, 0.01)
+        base_time = d.index[i]
+        age_days = (d.index[-1] - base_time).total_seconds() / 86400.0
+        zone_id = f"{symbol}|{timeframe}|{zone_type}|{base_time.isoformat()}|{bottom:.2f}|{top:.2f}"
 
         rows.append({
             "symbol": symbol,
             "timeframe": timeframe,
+            "zone_id": zone_id,
+            "zone_timeframe": timeframe,
             "zone_type": zone_type,
+            "zone_created_time": base_time.isoformat(),
             "pattern": pattern,
-            "base_time": d.index[i].isoformat(),
+            "base_time": base_time.isoformat(),
             "zone_top": round(top, 2),
             "zone_bottom": round(bottom, 2),
+            "zone_age_days": round(float(age_days), 2),
+            "zone_age_bars": int(max(0, len(d) - i - 1)),
+            "zone_width": round(float(zone_width), 2),
+            "zone_width_pct": round(float(zone_width / midpoint * 100.0), 3),
+            "zone_height_atr": round(float(zone_width / row["avg_range"]), 3),
             "base_open": round(float(row["open"]), 2),
             "base_high": round(float(row["high"]), 2),
             "base_low": round(float(row["low"]), 2),
@@ -183,11 +213,31 @@ def detect_zones(df: pd.DataFrame, symbol: str, timeframe: str) -> list[dict]:
             "base_volume_ratio": round(float(vol_ratio), 2),
             "prior_atr": round(float(prior_atr), 2),
             "departure_atr": round(float(departure_atr), 2),
+            "departure_atr_expansion": round(float(abs(departure_atr)), 3),
+            "departure_strength_score": round(float(min(4, departure_strength) + min(3, departure_vol_ratio)), 3),
+            "departure_body_ratio": round(float(departure_body_multiple), 2),
+            "departure_candle_count": int(RULES.departure_window),
             "departure_body_vs_base_body": round(float(departure_body_multiple), 2),
             "departure_volume_ratio": round(float(departure_vol_ratio), 2),
             "freshness": freshness,
             "tests": int(tests),
+            "touch_count_before_snapshot": int(tests),
+            "first_touch_time": first_touch_time,
+            "last_touch_time": last_touch_time,
+            "fresh_zone": bool(freshness == "fresh" and not broken),
             "broken": bool(broken),
+            "nested_inside_higher_tf": False,
+            "higher_tf_zone_count": 1,
+            "overlapping_zone_count": 1,
+            "confluence_score": 0,
+            "trend_alignment": "",
+            "distance_to_next_supply": "",
+            "distance_to_next_demand": "",
+            "gap_created_zone": False,
+            "gap_into_zone": False,
+            "gap_away_from_zone": False,
+            "base_quality_score": round(float(quality_score), 2),
+            "historical_reaction_count": "",
             "quality_score": round(float(quality_score), 2),
         })
 

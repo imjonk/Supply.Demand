@@ -13,6 +13,8 @@ from config import REPORT_DIR
 
 BOOL_TRUE = {"true", "1", "yes", "y", "t"}
 FUNNEL_GROUPS = {"funnel_by_scenario": "scenario_family", "funnel_by_symbol": "symbol", "funnel_by_timeframe": "timeframe", "funnel_by_grade": "watchlist_grade", "funnel_by_hour": "hour_of_day", "funnel_by_quality_score_bucket": "quality_score_bucket", "funnel_by_distance_bucket": "distance_bucket", "funnel_by_gap_direction": "gap_direction", "funnel_by_gap_size_bucket": "gap_size_bucket", "funnel_by_recent_movement_direction": "recent_move_direction", "funnel_by_recent_movement_strength": "recent_move_strength"}
+FEATURE_GROUPS = {"setup_quality_grade": "setup_quality_grade", "setup_quality_score_bucket": "setup_quality_score_bucket", "distance_pct_bucket": "distance_pct_bucket", "watchlist_bucket": "watchlist_bucket", "scenario_family": "scenario_family", "zone_type": "zone_type", "timeframe": "timeframe", "current_price_session": "current_price_session", "gap_direction": "gap_direction", "gap_pct_bucket": "gap_pct_bucket", "gap_zone_context": "gap_zone_context", "recent_move_direction": "recent_move_direction", "recent_move_strength": "recent_move_strength", "volume_state": "volume_state", "vpa_state": "vpa_state", "price_vs_9ema": "price_vs_9ema", "price_vs_vwap": "price_vs_vwap", "zone_movement_state": "zone_movement_state", "observation_score_bucket": "observation_score_bucket", "historical_zone_tendency": "historical_zone_tendency", "historical_reaction_score_bucket": "historical_reaction_score_bucket"}
+FEATURE_OUTPUTS = {"feature_conversion_by_grade": ["setup_quality_grade", "setup_quality_score_bucket"], "feature_conversion_by_distance": ["distance_pct_bucket"], "feature_conversion_by_gap": ["gap_direction", "gap_pct_bucket", "gap_zone_context"], "feature_conversion_by_movement": ["recent_move_direction", "recent_move_strength", "zone_movement_state"], "feature_conversion_by_vpa": ["volume_state", "vpa_state", "price_vs_9ema", "price_vs_vwap"], "feature_conversion_by_zone_context": ["watchlist_bucket", "scenario_family", "zone_type", "timeframe", "current_price_session", "historical_zone_tendency", "historical_reaction_score_bucket"]}
 
 
 def _bool_series(s: pd.Series) -> pd.Series:
@@ -241,16 +243,26 @@ def _rate(n, d) -> float:
     return round(float(n) / max(float(d), 1.0) * 100.0, 2)
 
 
+def _sample_flag(n: int) -> str:
+    if n < 10:
+        return "very_low_sample"
+    if n < 30:
+        return "low_sample"
+    if n < 100:
+        return "small_sample"
+    return "ok"
+
+
 def _lifecycle_dataset(lifecycle: pd.DataFrame, candidates: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
     if lifecycle.empty or "snapshot_candidate_id" not in lifecycle.columns:
         return pd.DataFrame()
     df = lifecycle.copy()
-    cand_cols = ["snapshot_candidate_id", "entry_eligible", "side", "timeframe", "setup_quality_grade", "setup_quality_score", "gap_direction", "gap_pct", "recent_move_direction", "recent_move_strength", "watchlist_bucket"]
+    cand_cols = ["snapshot_candidate_id", "entry_eligible", "side", "timeframe", "setup_quality_grade", "setup_quality_score", "gap_direction", "gap_pct", "gap_zone_context", "recent_move_direction", "recent_move_strength", "watchlist_bucket", "current_price_session", "volume_state", "vpa_state", "price_vs_9ema", "price_vs_vwap", "zone_movement_state", "observation_score", "historical_zone_tendency", "historical_reaction_score"]
     if not candidates.empty and "snapshot_candidate_id" in candidates.columns:
         use = [c for c in cand_cols if c in candidates.columns and (c == "snapshot_candidate_id" or c not in df.columns)]
         df = df.merge(candidates[use].drop_duplicates("snapshot_candidate_id"), on="snapshot_candidate_id", how="left")
     if not trades.empty and "snapshot_candidate_id" in trades.columns:
-        use = [c for c in ["snapshot_candidate_id", "r_multiple", "reached_1r", "reached_2r", "reached_3r"] if c in trades.columns]
+        use = [c for c in ["snapshot_candidate_id", "r_multiple", "mfe_r", "mae_r", "reached_1r", "reached_2r", "reached_3r"] if c in trades.columns]
         df = df.merge(trades[use].drop_duplicates("snapshot_candidate_id"), on="snapshot_candidate_id", how="left")
 
     state = _col(df, "lifecycle_state").fillna("").astype(str)
@@ -276,10 +288,52 @@ def _lifecycle_dataset(lifecycle: pd.DataFrame, candidates: pd.DataFrame, trades
     q = pd.to_numeric(_col(df, "setup_quality_score", np.nan), errors="coerce")
     dist = pd.to_numeric(_col(df, "distance_pct", np.nan), errors="coerce").abs()
     gap = pd.to_numeric(_col(df, "gap_pct", np.nan), errors="coerce").abs()
-    df["quality_score_bucket"] = pd.cut(q, [-np.inf, 5, 7, 8, 9, np.inf], labels=["<5", "5-6.9", "7-7.9", "8-8.9", "9+"]).astype("object").fillna("unknown")
-    df["distance_bucket"] = pd.cut(dist, [-np.inf, 1, 2, 5, 10, np.inf], labels=["<=1%", "1-2%", "2-5%", "5-10%", ">10%"]).astype("object").fillna("unknown")
-    df["gap_size_bucket"] = pd.cut(gap, [-np.inf, .5, 1, 2, 5, np.inf], labels=["<=0.5%", "0.5-1%", "1-2%", "2-5%", ">5%"]).astype("object").fillna("unknown")
+    obs = pd.to_numeric(_col(df, "observation_score", np.nan), errors="coerce")
+    hist = pd.to_numeric(_col(df, "historical_reaction_score", np.nan), errors="coerce")
+    df["setup_quality_score_bucket"] = pd.cut(q, [-np.inf, 5, 7, 8, 9, np.inf], labels=["<5", "5-6.9", "7-7.9", "8-8.9", "9+"]).astype("object").fillna("unknown")
+    df["distance_pct_bucket"] = pd.cut(dist, [-np.inf, 1, 2, 5, 10, np.inf], labels=["<=1%", "1-2%", "2-5%", "5-10%", ">10%"]).astype("object").fillna("unknown")
+    df["gap_pct_bucket"] = pd.cut(gap, [-np.inf, .5, 1, 2, 5, np.inf], labels=["<=0.5%", "0.5-1%", "1-2%", "2-5%", ">5%"]).astype("object").fillna("unknown")
+    df["observation_score_bucket"] = pd.cut(obs, [-np.inf, 40, 60, 75, 90, np.inf], labels=["<40", "40-59", "60-74", "75-89", "90+"]).astype("object").fillna("unknown")
+    df["historical_reaction_score_bucket"] = pd.cut(hist, [-np.inf, -10, 0, 10, np.inf], labels=["<-10", "-10-0", "0-10", ">10"]).astype("object").fillna("unknown")
+    df["quality_score_bucket"] = df["setup_quality_score_bucket"]
+    df["distance_bucket"] = df["distance_pct_bucket"]
+    df["gap_size_bucket"] = df["gap_pct_bucket"]
     return df
+
+
+def _feature_conversion(df: pd.DataFrame, features: dict[str, str]) -> pd.DataFrame:
+    cols = ["feature", "bucket", "candidate_count", "trades", "sample_size_flag", "zone_reached_pct", "zone_exited_pct", "trade_entered_pct", "winner_pct", "reached_1r_pct", "reached_2r_pct", "reached_3r_pct", "avg_r", "total_r", "avg_mfe_r", "avg_mae_r"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    rows = []
+    for feature, col in features.items():
+        if col not in df.columns:
+            continue
+        grouped = df.assign(_bucket=_col(df, col, "unknown").fillna("unknown").astype(str).replace("", "unknown")).groupby("_bucket", dropna=False)
+        for bucket, g in grouped:
+            n = len(g); t = g.loc[g["trade_entered_flag"]]; trades = len(t)
+            r = pd.to_numeric(_col(t, "r_multiple", np.nan), errors="coerce")
+            rows.append({"feature": feature, "bucket": bucket, "candidate_count": n, "trades": trades, "sample_size_flag": _sample_flag(n), "zone_reached_pct": _rate(g["reached_zone_flag"].sum(), n), "zone_exited_pct": _rate(g["exited_zone_flag"].sum(), n), "trade_entered_pct": _rate(trades, n), "winner_pct": _rate(t["winning_trade_flag"].sum(), trades), "reached_1r_pct": _rate(t["reached_1r_flag"].sum(), trades), "reached_2r_pct": _rate(t["reached_2r_flag"].sum(), trades), "reached_3r_pct": _rate(t["reached_3r_flag"].sum(), trades), "avg_r": round(r.mean(), 3) if trades else np.nan, "total_r": round(r.sum(), 3) if trades else np.nan, "avg_mfe_r": round(pd.to_numeric(_col(t, "mfe_r", np.nan), errors="coerce").mean(), 3) if trades else np.nan, "avg_mae_r": round(pd.to_numeric(_col(t, "mae_r", np.nan), errors="coerce").mean(), 3) if trades else np.nan})
+    return pd.DataFrame(rows, columns=cols).sort_values(["trade_entered_pct", "candidate_count"], ascending=[False, False])
+
+
+def _feature_best_predictors(summary: pd.DataFrame) -> pd.DataFrame:
+    cols = ["predictor_type", "feature", "bucket", "candidate_count", "trades", "metric_value", "sample_size_flag", "zone_reached_pct", "trade_entered_pct", "winner_pct", "avg_r"]
+    if summary.empty:
+        return pd.DataFrame(columns=cols)
+    s = summary.copy()
+    large = max(10, int(pd.to_numeric(s["candidate_count"], errors="coerce").quantile(.75)))
+    parts = [
+        ("best_zone_reach", "zone_reached_pct", s),
+        ("best_trade_conversion", "trade_entered_pct", s),
+        ("best_positive_r", "avg_r", s[s["trades"] > 0]),
+        ("high_count_poor_conversion", "trade_entered_pct", s[(s["candidate_count"] >= large) & ((s["trade_entered_pct"] <= s["trade_entered_pct"].median()) | (pd.to_numeric(s["avg_r"], errors="coerce") < 0))]),
+    ]
+    out = []
+    for kind, metric, d in parts:
+        for _, r in d.sort_values([metric, "candidate_count"], ascending=[kind == "high_count_poor_conversion", False]).head(12).iterrows():
+            out.append({"predictor_type": kind, "feature": r["feature"], "bucket": r["bucket"], "candidate_count": r["candidate_count"], "trades": r["trades"], "metric_value": r[metric], "sample_size_flag": r["sample_size_flag"], "zone_reached_pct": r["zone_reached_pct"], "trade_entered_pct": r["trade_entered_pct"], "winner_pct": r["winner_pct"], "avg_r": r["avg_r"]})
+    return pd.DataFrame(out, columns=cols)
 
 
 def _funnel_summary_lifecycle(df: pd.DataFrame) -> pd.DataFrame:
@@ -1119,10 +1173,11 @@ def _write_csvs(out_dir: Path, tables: dict[str, pd.DataFrame]) -> None:
 
 
 def _write_funnel_outputs(base: Path, tables: dict[str, pd.DataFrame]) -> None:
-    for name in ["funnel_summary", *FUNNEL_GROUPS.keys(), "rejection_breakdown", "conversion_rates"]:
+    for name in ["funnel_summary", *FUNNEL_GROUPS.keys(), "rejection_breakdown", "conversion_rates", "feature_conversion_summary", *FEATURE_OUTPUTS.keys(), "feature_conversion_best_predictors"]:
         tables.get(name, pd.DataFrame()).to_csv(base / f"{name}.csv", index=False)
 
     funnel = tables.get("funnel_summary", pd.DataFrame())
+    best = tables.get("feature_conversion_best_predictors", pd.DataFrame())
     lines = ["# Backtest Report", "", "## Candidate Funnel", ""]
     if funnel.empty:
         lines.append("No candidate lifecycle data available.")
@@ -1131,7 +1186,32 @@ def _write_funnel_outputs(base: Path, tables: dict[str, pd.DataFrame]) -> None:
         lines.append("|---|---:|---:|---:|")
         for r in funnel.itertuples(index=False):
             lines.append(f"| {r.stage} | {r.count} | {r.pct_of_candidates}% | {r.pct_from_prior}% |")
+    lines += ["", "## Watchlist Feature Predictiveness", ""]
+    for kind, title in [("best_zone_reach", "Best features for reaching zone"), ("best_trade_conversion", "Best features for becoming a trade"), ("best_positive_r", "Best features for positive R"), ("high_count_poor_conversion", "High-count warnings")]:
+        rows = best[best["predictor_type"].eq(kind)].head(10) if not best.empty else pd.DataFrame()
+        lines += [f"### {title}", ""]
+        if rows.empty:
+            lines.append("No rows.")
+        else:
+            lines += ["| Feature | Bucket | Candidates | Trades | Metric | Sample |", "|---|---|---:|---:|---:|---|"]
+            lines += [f"| {r.feature} | {r.bucket} | {r.candidate_count} | {r.trades} | {r.metric_value} | {r.sample_size_flag} |" for r in rows.itertuples(index=False)]
+        lines.append("")
     (base / "backtest_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _feature_predictiveness_html(tables: dict[str, pd.DataFrame]) -> str:
+    best = tables.get("feature_conversion_best_predictors", pd.DataFrame())
+    if best.empty:
+        return "<h2>Watchlist Feature Predictiveness</h2><p class='muted'>No feature conversion data available.</p>"
+    def block(kind: str, title: str) -> str:
+        return f"<section><h2>{title}</h2>{_table(best[best['predictor_type'].eq(kind)].head(12))}</section>"
+    return f"""
+    <h2>Watchlist Feature Predictiveness</h2>
+    <div class='muted'>Feature buckets are observational diagnostics with sample-size flags. Use them to decide what to inspect next, not as automatic strategy rules.</div>
+    <div class='grid2'>{block('best_zone_reach', 'Best Zone-Reach Features')}{block('best_trade_conversion', 'Best Trade-Conversion Features')}</div>
+    <div class='grid2'>{block('best_positive_r', 'Best Positive-R Features')}{block('high_count_poor_conversion', 'High-Count Warning Features')}</div>
+    <h2>Feature Conversion Summary</h2>{_table(tables.get('feature_conversion_summary'), max_rows=80)}
+    """
 
 
 def _recommendations(tables: dict[str, pd.DataFrame], trades: pd.DataFrame) -> list[str]:
@@ -1200,6 +1280,7 @@ def main(argv: Iterable[str] | None = None):
         )
 
     lifecycle_full = _lifecycle_dataset(lifecycle, candidates, trades)
+    feature_summary = _feature_conversion(lifecycle_full, FEATURE_GROUPS)
     tables: dict[str, pd.DataFrame] = {
         "performance_by_scenario": _performance_agg(trades, ["scenario", "side"]),
         "performance_by_symbol": _performance_agg(trades, ["symbol"]),
@@ -1228,8 +1309,11 @@ def main(argv: Iterable[str] | None = None):
         "funnel_summary": _funnel_summary_lifecycle(lifecycle_full),
         "rejection_breakdown": _rejection_breakdown_lifecycle(lifecycle_full),
         "conversion_rates": _conversion_rates_lifecycle(lifecycle_full),
+        "feature_conversion_summary": feature_summary,
+        "feature_conversion_best_predictors": _feature_best_predictors(feature_summary),
     }
     tables.update({name: _funnel_by_lifecycle(lifecycle_full, col) for name, col in FUNNEL_GROUPS.items()})
+    tables.update({name: feature_summary[feature_summary["feature"].isin(features)].copy() if not feature_summary.empty else pd.DataFrame(columns=feature_summary.columns) for name, features in FEATURE_OUTPUTS.items()})
 
     tables["reversal_rejection_breakdowns"] = _build_reversal_rejection_breakdowns(trades)
     tables["reversal_rejection_rule_variants"] = _build_reversal_rule_variants(trades)
@@ -1298,6 +1382,7 @@ def main(argv: Iterable[str] | None = None):
     strategy_read = _strategy_read_html(tables, trades)
     reversal_diagnostics = _reversal_diagnostics_html(tables, trades)
     exit_path_audit = _exit_path_audit_html(tables, trades)
+    feature_predictiveness = _feature_predictiveness_html(tables)
     glossary = _glossary_html()
 
     recs = _recommendations(tables, trades)
@@ -1335,6 +1420,7 @@ def main(argv: Iterable[str] | None = None):
       <section><h2>Funnel By Distance</h2>{_table(tables.get('funnel_by_distance_bucket'))}</section>
       <section><h2>Lifecycle Rejections</h2>{_table(tables.get('rejection_breakdown'))}</section>
     </div>
+    {feature_predictiveness}
     <h2>Opportunity Funnel</h2>{_table(tables['entry_funnel'])}
     <h2>Target Progression</h2>{_table(tables['target_progress'])}
     <h2>Target Model Comparison</h2>{_table(tables['target_model_comparison'])}

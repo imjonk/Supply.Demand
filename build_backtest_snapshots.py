@@ -151,6 +151,7 @@ def _state_one_zone(row: pd.Series, bars: pd.DataFrame, asof: pd.Timestamp) -> d
     tests = 0
     broken = False
     broken_time = ""
+    first_test_time = ""
     last_test_time = ""
     for ts, b in subsequent.iterrows():
         overlaps = (float(b["low"]) <= top) and (float(b["high"]) >= bottom)
@@ -161,6 +162,7 @@ def _state_one_zone(row: pd.Series, bars: pd.DataFrame, asof: pd.Timestamp) -> d
                 break
             if overlaps:
                 tests += 1
+                first_test_time = first_test_time or ts.isoformat()
                 last_test_time = ts.isoformat()
         else:
             if float(b["close"]) > top:
@@ -169,6 +171,7 @@ def _state_one_zone(row: pd.Series, bars: pd.DataFrame, asof: pd.Timestamp) -> d
                 break
             if overlaps:
                 tests += 1
+                first_test_time = first_test_time or ts.isoformat()
                 last_test_time = ts.isoformat()
 
     if broken:
@@ -193,13 +196,28 @@ def _state_one_zone(row: pd.Series, bars: pd.DataFrame, asof: pd.Timestamp) -> d
     quality_score = min(4, departure_strength) + min(3, dep_vol) + fresh_bonus + tf_bonus
 
     out = row.to_dict()
+    zone_width = max(0.0, top - bottom)
+    midpoint = max((top + bottom) / 2.0, 0.01)
+    age_days = (asof - base_time).total_seconds() / 86400.0
+    age_bars = len(bars[(bars.index > base_time) & (bars.index <= asof)])
     out.update({
+        "zone_id": row.get("zone_id") or f"{row.get('symbol')}|{row.get('timeframe')}|{zone_type}|{base_time.isoformat()}|{bottom:.2f}|{top:.2f}",
+        "zone_timeframe": row.get("zone_timeframe", row.get("timeframe", "")),
+        "zone_created_time": row.get("zone_created_time", row.get("base_time", "")),
+        "zone_age_days": round(float(age_days), 2),
+        "zone_age_bars": int(age_bars),
+        "zone_width": round(float(zone_width), 2),
+        "zone_width_pct": round(float(zone_width / midpoint * 100.0), 3),
         "tests": int(tests),
+        "touch_count_before_snapshot": int(tests),
         "freshness": freshness,
+        "fresh_zone": bool(freshness == "fresh" and not broken),
         "broken": bool(broken),
         "broken_time": broken_time,
+        "first_touch_time": first_test_time,
         "last_test_time": last_test_time,
         "quality_score": round(float(quality_score), 2),
+        "base_quality_score": row.get("base_quality_score", round(float(quality_score), 2)),
         "snapshot_as_of": asof.isoformat(),
     })
     return out

@@ -22,7 +22,7 @@ from config import (
     EXCLUDE_BROKEN_ZONES_FROM_WATCHLIST_CALCULATIONS,
 )
 from data_loader import load_symbol_csv, aggregate_bars, regular_session_only, MARKET_TZ
-from zone_detector import detect_zones
+from zone_detector import ZONE_METADATA_FIELDS, detect_zones
 from movement_context import (
     compute_symbol_movement_context, classify_market_session,
     load_zone_reaction_history, enrich_movement_context,
@@ -216,6 +216,10 @@ def _timeframe_rank(tf: str) -> int:
     return {'1D': 6, '4H': 5, '3H': 4, '2H': 3, '90m': 2, '1H': 1}.get(str(tf), 0)
 
 
+def _zone_metadata_payload(row: pd.Series) -> dict:
+    return {field: row.get(field, '') for field in ZONE_METADATA_FIELDS}
+
+
 def _best_freshness(values) -> str:
     order = {'fresh': 3, 'one_test': 2, 'multiple_tests': 1, 'broken': 0}
     vals = [str(v) for v in values if str(v) in order]
@@ -247,6 +251,7 @@ def _merge_zone_cluster(cluster: list[pd.Series]) -> dict:
 
     primary.update({
         'timeframe': '/'.join(tfs),
+        'zone_timeframe': '/'.join(tfs),
         'pattern': '/'.join(patterns),
         'zone_bottom': round(bottom, 2),
         'zone_top': round(top, 2),
@@ -255,6 +260,10 @@ def _merge_zone_cluster(cluster: list[pd.Series]) -> dict:
         'quality_score': round(q, 2),
         'confluence_count': int(len(df)),
         'confluence_timeframes': ','.join(tfs),
+        'nested_inside_higher_tf': bool(len(df) > 1),
+        'higher_tf_zone_count': int(len(tfs)),
+        'overlapping_zone_count': int(len(df)),
+        'confluence_score': round(float(min(10, len(df) * 2)), 2),
         'merged_from': '; '.join(
             f"{r['timeframe']} {r['zone_type']} {float(r['zone_bottom']):.2f}-{float(r['zone_top']):.2f} {r['pattern']}" 
             for _, r in df.iterrows()
@@ -1619,7 +1628,7 @@ def build_watchlist_from_zone_snapshot(zones_df: pd.DataFrame, latest_prices: di
                 watch_zones_df, z['symbol'], z['zone_type'], price, z, side=sc['side']
             )
 
-            candidates.append({
+            candidate = {
                 'status': status,
                 'symbol': z['symbol'],
                 'current_price': round(price, 2),
@@ -1679,7 +1688,9 @@ def build_watchlist_from_zone_snapshot(zones_df: pd.DataFrame, latest_prices: di
                 'confluence_timeframes': z.get('confluence_timeframes', z['timeframe']),
                 'merged_from': z.get('merged_from', ''),
                 'primary_timeframe': z.get('primary_timeframe', z['timeframe']),
-            })
+            }
+            candidate.update(_zone_metadata_payload(z))
+            candidates.append(candidate)
 
     watch_df = pd.DataFrame(candidates)
     watch_df = _add_watchlist_visual_context(watch_df, watch_zones_df, {}, latest_prices, latest_price_as_of)
@@ -1939,7 +1950,7 @@ def build_watchlist(as_of_date: str | None = None) -> tuple[pd.DataFrame, pd.Dat
                 watch_zones_df, z['symbol'], z['zone_type'], price, z, side=sc['side']
             )
 
-            candidates.append({
+            candidate = {
                 'status': status,
                 'symbol': z['symbol'],
                 'current_price': round(price, 2),
@@ -1999,7 +2010,9 @@ def build_watchlist(as_of_date: str | None = None) -> tuple[pd.DataFrame, pd.Dat
                 'confluence_timeframes': z.get('confluence_timeframes', z['timeframe']),
                 'merged_from': z.get('merged_from', ''),
                 'primary_timeframe': z.get('primary_timeframe', z['timeframe']),
-            })
+            }
+            candidate.update(_zone_metadata_payload(z))
+            candidates.append(candidate)
 
     watch_df = pd.DataFrame(candidates)
     watch_df = _add_watchlist_visual_context(watch_df, watch_zones_df, structure_context, latest_prices, latest_price_as_of)

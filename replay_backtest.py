@@ -8,6 +8,7 @@ import numpy as np
 
 from config import DATA_DIR, REPORT_DIR
 from data_loader import load_symbol_csv, regular_session_only
+from zone_detector import ZONE_METADATA_FIELDS
 
 
 def _parse_symbols(value: str | None) -> set[str] | None:
@@ -835,7 +836,7 @@ def _candidate_lifecycle(day_df: pd.DataFrame, scenario: pd.Series, entry_time=N
 
 
 def _candidate_lifecycle_row(cand: dict, lifecycle: dict) -> dict:
-    return {
+    row = {
         "snapshot_candidate_id": cand.get("snapshot_candidate_id", ""),
         "snapshot_test_date": cand.get("snapshot_test_date", cand.get("test_date", "")),
         "symbol": cand.get("symbol", ""),
@@ -853,6 +854,8 @@ def _candidate_lifecycle_row(cand: dict, lifecycle: dict) -> dict:
         "entry_time": lifecycle.get("entry_time", ""),
         "rejection_reason": lifecycle.get("lifecycle_rejection_reason", ""),
     }
+    row.update({field: cand.get(field, "") for field in ZONE_METADATA_FIELDS})
+    return row
 
 
 def _exit_row(ts, price, reason, r_mult, mfe, mae, reached_1r, reached_2r, reached_3r, target, stop, risk, **extra):
@@ -1453,6 +1456,7 @@ def main():
                 "setup_quality_grade": sc.get("setup_quality_grade", sc.get("grade", "")),
                 "setup_quality_score": sc.get("setup_quality_score", sc.get("quality_score", "")),
             }
+            cand.update({field: sc.get(field, "") for field in ZONE_METADATA_FIELDS})
             if day_df.empty:
                 lifecycle = _candidate_lifecycle(day_df, sc, terminal_state="finished_no_trade", rejection_reason="missing_5m_day_data")
                 cand.update({**lifecycle, "entry_eligible": False, "rejection_reason": "missing_5m_day_data"})
