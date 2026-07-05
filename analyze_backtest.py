@@ -12,6 +12,7 @@ from config import REPORT_DIR
 
 
 BOOL_TRUE = {"true", "1", "yes", "y", "t"}
+FUNNEL_GROUPS = {"funnel_by_scenario": "scenario_family", "funnel_by_symbol": "symbol", "funnel_by_timeframe": "timeframe", "funnel_by_grade": "watchlist_grade", "funnel_by_hour": "hour_of_day", "funnel_by_quality_score_bucket": "quality_score_bucket", "funnel_by_distance_bucket": "distance_bucket", "funnel_by_gap_direction": "gap_direction", "funnel_by_gap_size_bucket": "gap_size_bucket", "funnel_by_recent_movement_direction": "recent_move_direction", "funnel_by_recent_movement_strength": "recent_move_strength"}
 
 
 def _bool_series(s: pd.Series) -> pd.Series:
@@ -225,6 +226,106 @@ def _funnel(candidates: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
     for reason, n in candidates.loc[~eligible, "rejection_reason"].fillna("unknown").value_counts().items() if "rejection_reason" in candidates.columns else []:
         rows.append({"stage": f"rejected: {reason}", "count": int(n), "pct_of_candidates": round(n / max(len(candidates), 1) * 100, 2)})
     return pd.DataFrame(rows)
+
+
+def _col(df: pd.DataFrame, name: str, default="") -> pd.Series:
+    return df[name] if name in df.columns else pd.Series(default, index=df.index)
+
+
+def _nonblank(s: pd.Series) -> pd.Series:
+    text = s.fillna("").astype(str).str.strip()
+    return text.ne("") & ~text.str.lower().isin({"nan", "none"})
+
+
+def _rate(n, d) -> float:
+    return round(float(n) / max(float(d), 1.0) * 100.0, 2)
+
+
+def _lifecycle_dataset(lifecycle: pd.DataFrame, candidates: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
+    if lifecycle.empty or "snapshot_candidate_id" not in lifecycle.columns:
+        return pd.DataFrame()
+    df = lifecycle.copy()
+    cand_cols = ["snapshot_candidate_id", "entry_eligible", "side", "timeframe", "setup_quality_grade", "setup_quality_score", "gap_direction", "gap_pct", "recent_move_direction", "recent_move_strength", "watchlist_bucket"]
+    if not candidates.empty and "snapshot_candidate_id" in candidates.columns:
+        use = [c for c in cand_cols if c in candidates.columns and (c == "snapshot_candidate_id" or c not in df.columns)]
+        df = df.merge(candidates[use].drop_duplicates("snapshot_candidate_id"), on="snapshot_candidate_id", how="left")
+    if not trades.empty and "snapshot_candidate_id" in trades.columns:
+        use = [c for c in ["snapshot_candidate_id", "r_multiple", "reached_1r", "reached_2r", "reached_3r"] if c in trades.columns]
+        df = df.merge(trades[use].drop_duplicates("snapshot_candidate_id"), on="snapshot_candidate_id", how="left")
+
+    state = _col(df, "lifecycle_state").fillna("").astype(str)
+    df["reached_zone_flag"] = _nonblank(_col(df, "first_zone_touch_time"))
+    df["exited_zone_flag"] = _nonblank(_col(df, "first_zone_exit_time"))
+    df["confirmed_flag"] = _nonblank(_col(df, "confirmation_time"))
+    df["entry_eligible_flag"] = _bool_series(_col(df, "entry_eligible", False))
+    df["trade_entered_flag"] = state.eq("entered_trade") | _col(df, "r_multiple", np.nan).notna()
+    df["winning_trade_flag"] = pd.to_numeric(_col(df, "r_multiple", np.nan), errors="coerce") > 0
+    for c in ["reached_1r", "reached_2r", "reached_3r"]:
+        df[f"{c}_flag"] = _bool_series(_col(df, c, False))
+
+    text = (_col(df, "scenario").astype(str) + " " + _col(df, "zone_type").astype(str) + " " + _col(df, "side").astype(str)).str.lower()
+    df["scenario_family"] = np.select([text.str.contains("demand") & text.str.contains("break"), text.str.contains("demand"), text.str.contains("supply") & text.str.contains("break"), text.str.contains("supply")], ["Demand Break", "Demand Reversal", "Supply Break", "Supply Reversal"], default="Unknown")
+    ts_base = _col(df, "first_zone_touch_time").where(df["reached_zone_flag"], _col(df, "entry_time"))
+    ts = pd.to_datetime(ts_base, errors="coerce", utc=True)
+    try:
+        ts = ts.dt.tz_convert("America/New_York")
+    except Exception:
+        pass
+    df["hour_of_day"] = ts.dt.strftime("%H:00").fillna("unknown")
+    df["watchlist_grade"] = _col(df, "setup_quality_grade", "unknown").fillna("unknown").replace("", "unknown")
+    q = pd.to_numeric(_col(df, "setup_quality_score", np.nan), errors="coerce")
+    dist = pd.to_numeric(_col(df, "distance_pct", np.nan), errors="coerce").abs()
+    gap = pd.to_numeric(_col(df, "gap_pct", np.nan), errors="coerce").abs()
+    df["quality_score_bucket"] = pd.cut(q, [-np.inf, 5, 7, 8, 9, np.inf], labels=["<5", "5-6.9", "7-7.9", "8-8.9", "9+"]).astype("object").fillna("unknown")
+    df["distance_bucket"] = pd.cut(dist, [-np.inf, 1, 2, 5, 10, np.inf], labels=["<=1%", "1-2%", "2-5%", "5-10%", ">10%"]).astype("object").fillna("unknown")
+    df["gap_size_bucket"] = pd.cut(gap, [-np.inf, .5, 1, 2, 5, np.inf], labels=["<=0.5%", "0.5-1%", "1-2%", "2-5%", ">5%"]).astype("object").fillna("unknown")
+    return df
+
+
+def _funnel_summary_lifecycle(df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["stage", "count", "pct_of_candidates", "pct_from_prior"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    stages = [("Snapshot Candidates", len(df)), ("Zone Reached", int(df["reached_zone_flag"].sum())), ("Zone Exited", int(df["exited_zone_flag"].sum())), ("Entry Eligible", int(df["entry_eligible_flag"].sum())), ("Trade Entered", int(df["trade_entered_flag"].sum())), ("Winning Trade", int(df["winning_trade_flag"].sum()))]
+    return pd.DataFrame([{"stage": s, "count": c, "pct_of_candidates": _rate(c, len(df)), "pct_from_prior": 100.0 if i == 0 else _rate(c, stages[i - 1][1])} for i, (s, c) in enumerate(stages)], columns=cols)
+
+
+def _funnel_by_lifecycle(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    cols = [group_col, "candidates", "reached_zone", "zone_exited", "entry_eligible", "trades", "winners", "reached_pct", "trade_pct", "win_pct"]
+    if df.empty or group_col not in df.columns:
+        return pd.DataFrame(columns=cols)
+    rows = []
+    for key, g in df.groupby(_col(df, group_col, "unknown").fillna("unknown").replace("", "unknown"), dropna=False):
+        n = len(g); trades = int(g["trade_entered_flag"].sum())
+        rows.append({
+            group_col: key, "candidates": n, "reached_zone": int(g["reached_zone_flag"].sum()),
+            "zone_exited": int(g["exited_zone_flag"].sum()), "entry_eligible": int(g["entry_eligible_flag"].sum()),
+            "trades": trades, "winners": int(g["winning_trade_flag"].sum()),
+            "reached_pct": _rate(g["reached_zone_flag"].sum(), n), "trade_pct": _rate(trades, n),
+            "win_pct": _rate(g["winning_trade_flag"].sum(), trades),
+        })
+    return pd.DataFrame(rows, columns=cols).sort_values(["candidates", "trades"], ascending=[False, False])
+
+
+def _rejection_breakdown_lifecycle(df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["rejection_reason", "count", "pct_of_candidates", "pct_of_rejections"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    lost = df.loc[~df["trade_entered_flag"]].copy()
+    reason = _col(lost, "rejection_reason").where(_nonblank(_col(lost, "rejection_reason")), _col(lost, "lifecycle_state", "unknown"))
+    out = reason.fillna("unknown").replace("", "unknown").value_counts().reset_index()
+    out.columns = ["rejection_reason", "count"]
+    out["pct_of_candidates"] = out["count"].apply(lambda n: _rate(n, len(df)))
+    out["pct_of_rejections"] = out["count"].apply(lambda n: _rate(n, len(lost)))
+    return out[cols]
+
+
+def _conversion_rates_lifecycle(df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["transition", "numerator", "denominator", "conversion_pct"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    pairs = [("Snapshot -> Zone Reached", df["reached_zone_flag"], pd.Series(True, index=df.index)), ("Zone Reached -> Trade", df["trade_entered_flag"] & df["reached_zone_flag"], df["reached_zone_flag"]), ("Zone Exited -> Confirmation", df["confirmed_flag"] & df["exited_zone_flag"], df["exited_zone_flag"]), ("Confirmation -> Trade", df["trade_entered_flag"] & df["confirmed_flag"], df["confirmed_flag"]), ("Trade -> Winner", df["winning_trade_flag"], df["trade_entered_flag"]), ("Trade -> 1R", df["reached_1r_flag"], df["trade_entered_flag"]), ("Trade -> 2R", df["reached_2r_flag"], df["trade_entered_flag"]), ("Trade -> 3R", df["reached_3r_flag"], df["trade_entered_flag"])]
+    return pd.DataFrame([{"transition": name, "numerator": int(num.sum()), "denominator": int(den.sum()), "conversion_pct": _rate(num.sum(), den.sum())} for name, num, den in pairs], columns=cols)
 
 
 def _time_of_day(trades: pd.DataFrame) -> pd.DataFrame:
@@ -1017,6 +1118,22 @@ def _write_csvs(out_dir: Path, tables: dict[str, pd.DataFrame]) -> None:
             df.to_csv(out_dir / f"{name}.csv", index=False)
 
 
+def _write_funnel_outputs(base: Path, tables: dict[str, pd.DataFrame]) -> None:
+    for name in ["funnel_summary", *FUNNEL_GROUPS.keys(), "rejection_breakdown", "conversion_rates"]:
+        tables.get(name, pd.DataFrame()).to_csv(base / f"{name}.csv", index=False)
+
+    funnel = tables.get("funnel_summary", pd.DataFrame())
+    lines = ["# Backtest Report", "", "## Candidate Funnel", ""]
+    if funnel.empty:
+        lines.append("No candidate lifecycle data available.")
+    else:
+        lines.append("| Stage | Count | % of Candidates | % From Prior |")
+        lines.append("|---|---:|---:|---:|")
+        for r in funnel.itertuples(index=False):
+            lines.append(f"| {r.stage} | {r.count} | {r.pct_of_candidates}% | {r.pct_from_prior}% |")
+    (base / "backtest_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _recommendations(tables: dict[str, pd.DataFrame], trades: pd.DataFrame) -> list[str]:
     recs: list[str] = []
     if trades.empty:
@@ -1054,16 +1171,18 @@ def main(argv: Iterable[str] | None = None):
     trades_path = base / "trades.csv"
     cand_path = base / "entry_candidates.csv"
     summary_path = base / "summary.csv"
+    lifecycle_path = base / "candidate_lifecycle.csv"
     if not trades_path.exists():
         raise SystemExit("Run replay_backtest.py first.")
     trades = pd.read_csv(trades_path)
     candidates = pd.read_csv(cand_path) if cand_path.exists() else pd.DataFrame()
     summary = pd.read_csv(summary_path) if summary_path.exists() else pd.DataFrame()
+    lifecycle = pd.read_csv(lifecycle_path) if lifecycle_path.exists() else pd.DataFrame()
 
     # Normalize common numeric/boolean columns.
-    for df in [trades, candidates]:
+    for df in [trades, candidates, lifecycle]:
         if not df.empty:
-            for c in ["r_multiple", "mfe_r", "mae_r", "entry_volume_ratio", "entry_body_ratio", "setup_quality_score", "entry_atr_14", "atr_1x_r", "target_1r_result", "target_2r_result", "target_3r_result", "target_atr_1x_result"]:
+            for c in ["r_multiple", "mfe_r", "mae_r", "entry_volume_ratio", "entry_body_ratio", "setup_quality_score", "distance_pct", "gap_pct", "entry_atr_14", "atr_1x_r", "target_1r_result", "target_2r_result", "target_3r_result", "target_atr_1x_result"]:
                 if c in df.columns:
                     df[c] = pd.to_numeric(df[c], errors="coerce")
             for c in ["reached_1r", "reached_2r", "reached_3r", "reached_atr_1x", "entry_eligible"]:
@@ -1080,6 +1199,7 @@ def main(argv: Iterable[str] | None = None):
             default="After 13:00"
         )
 
+    lifecycle_full = _lifecycle_dataset(lifecycle, candidates, trades)
     tables: dict[str, pd.DataFrame] = {
         "performance_by_scenario": _performance_agg(trades, ["scenario", "side"]),
         "performance_by_symbol": _performance_agg(trades, ["symbol"]),
@@ -1105,7 +1225,11 @@ def main(argv: Iterable[str] | None = None):
         "entry_funnel": _funnel(candidates, trades),
         "rejection_summary": _rejection_summary(candidates),
         "opportunity_cost_proxy": _opportunity_cost(candidates, trades),
+        "funnel_summary": _funnel_summary_lifecycle(lifecycle_full),
+        "rejection_breakdown": _rejection_breakdown_lifecycle(lifecycle_full),
+        "conversion_rates": _conversion_rates_lifecycle(lifecycle_full),
     }
+    tables.update({name: _funnel_by_lifecycle(lifecycle_full, col) for name, col in FUNNEL_GROUPS.items()})
 
     tables["reversal_rejection_breakdowns"] = _build_reversal_rejection_breakdowns(trades)
     tables["reversal_rejection_rule_variants"] = _build_reversal_rule_variants(trades)
@@ -1140,6 +1264,7 @@ def main(argv: Iterable[str] | None = None):
 
     analytics_dir = base / "analytics"
     _write_csvs(analytics_dir, tables)
+    _write_funnel_outputs(base, tables)
 
     # KPI cards
     if not summary.empty:
@@ -1168,6 +1293,7 @@ def main(argv: Iterable[str] | None = None):
     scenario_chart = _simple_bars(tables.get('performance_by_scenario'), 'scenario', 'avg_r', 'Average R by scenario', 'This is the clearest read on whether results are random or scenario-dependent.', max_rows=8, places=3, suffix='R')
     entry_chart = _simple_bars(tables.get('performance_by_entry_kind'), 'entry_kind', 'avg_r', 'Average R by entry type', 'Breakouts/breakdowns should be evaluated separately from reversals/rejections.', max_rows=8, places=3, suffix='R')
     funnel_chart = _simple_bars(tables.get('entry_funnel'), 'stage', 'count', 'Entry funnel counts', 'Shows where watchlist scenarios turn into simulated entries or get filtered.', max_rows=10, places=0, suffix='')
+    candidate_funnel_chart = _simple_bars(tables.get('funnel_summary'), 'stage', 'count', 'Candidate lifecycle funnel', 'Snapshot candidates through zone touch, eligibility, entries, and winners.', max_rows=8, places=0, suffix='')
     target_chart = _simple_bars(tables.get('target_progress'), 'milestone', 'pct_trades', 'Target progression', 'A trade can be useful even if it does not reach the full 3R target.', max_rows=10, places=1, suffix='%')
     strategy_read = _strategy_read_html(tables, trades)
     reversal_diagnostics = _reversal_diagnostics_html(tables, trades)
@@ -1186,7 +1312,7 @@ def main(argv: Iterable[str] | None = None):
 
     html = f"""<!doctype html><html><head><meta charset='utf-8'><title>Interactive Strategy Analytics Dashboard</title>{css}</head><body><main class='wrap'>
     <h1>Interactive Strategy Analytics Dashboard</h1>
-    <div class='muted'>Generated from <code>reports/backtest/trades.csv</code> and <code>reports/backtest/entry_candidates.csv</code>. This dashboard is meant to show which zone scenarios have edge, not just a headline win rate.</div>
+    <div class='muted'>Generated from <code>reports/backtest/trades.csv</code>, <code>reports/backtest/entry_candidates.csv</code>, and <code>reports/backtest/candidate_lifecycle.csv</code>. This dashboard is meant to show which zone scenarios have edge, not just a headline win rate.</div>
     <div class='cards'>{cards}</div>
     {strategy_read}
     <div class='note'><strong>How to read this:</strong> A strategy is not a dice roll if certain scenario buckets consistently show positive average R while others do not. Focus first on <em>average R</em>, <em>reached +1R/+2R</em>, and <em>MFE vs MAE</em>; profit win rate alone can hide whether winners are too small or losses are too large.</div>
@@ -1198,6 +1324,17 @@ def main(argv: Iterable[str] | None = None):
     <div class='grid2'>{funnel_chart}{target_chart}</div>
 
     <h2>Variable glossary</h2>{glossary}
+    <h2>Candidate Funnel</h2>
+    <div class='grid2'>{candidate_funnel_chart}{_table(tables.get('conversion_rates'))}</div>
+    {_table(tables.get('funnel_summary'))}
+    <div class='grid2'>
+      <section><h2>Funnel By Scenario</h2>{_table(tables.get('funnel_by_scenario'))}</section>
+      <section><h2>Funnel By Grade</h2>{_table(tables.get('funnel_by_grade'))}</section>
+    </div>
+    <div class='grid2'>
+      <section><h2>Funnel By Distance</h2>{_table(tables.get('funnel_by_distance_bucket'))}</section>
+      <section><h2>Lifecycle Rejections</h2>{_table(tables.get('rejection_breakdown'))}</section>
+    </div>
     <h2>Opportunity Funnel</h2>{_table(tables['entry_funnel'])}
     <h2>Target Progression</h2>{_table(tables['target_progress'])}
     <h2>Target Model Comparison</h2>{_table(tables['target_model_comparison'])}
@@ -1252,6 +1389,7 @@ def main(argv: Iterable[str] | None = None):
     old.write_text(html, encoding="utf-8")
     print(f"Wrote {out}")
     print(f"Wrote analytics CSVs to {analytics_dir}")
+    print(f"Wrote lifecycle funnel CSVs and markdown report to {base}")
 
 
 if __name__ == "__main__":
